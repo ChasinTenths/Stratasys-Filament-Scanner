@@ -1,0 +1,600 @@
+<!-- Forge Filament Tracker — scanner UI. Runs as an Apps Script web app. -->
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  :root {
+    --bg: #101418;
+    --panel: #1a2129;
+    --panel-2: #232c37;
+    --line: #32404f;
+    --text: #e8eef4;
+    --dim: #8fa1b3;
+    --accent: #ffb454;   /* shop-floor amber */
+    --ok: #4cd37b;
+    --warn: #ff6b5e;
+    --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.45 -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif; }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 12px 12px 40px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  header h1 { font-size: 15px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin: 0; font-weight: 600; }
+
+  .counter { font: 600 13px var(--mono); color: var(--accent); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .hidden { display: none !important; }
+
+  /* scanner */
+  #reader { border-radius: 10px; overflow: hidden; background: #000; }
+  #reader video { border-radius: 10px; }
+  .chips { display: flex; gap: 8px; margin-top: 10px; }
+  .chip { flex: 1; text-align: center; font: 600 12px var(--mono); padding: 8px 0;
+    border-radius: 8px; border: 1px dashed var(--line); color: var(--dim); }
+  .chip.got { border-style: solid; border-color: var(--ok); color: var(--ok); }
+  .scanhint { color: var(--dim); font-size: 13px; margin: 10px 2px 0; }
+  .unknown { margin-top: 10px; border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  .unknown b { color: var(--warn); }
+  .unknown code { font-family: var(--mono); display: block; margin-top: 4px; word-break: break-all; }
+
+  /* canister card */
+  .sn-big { font: 700 34px/1.1 var(--mono); letter-spacing: .06em; text-align: center;
+    color: var(--accent); margin: 4px 0 2px; }
+  .sn-label { text-align: center; color: var(--dim); font-size: 12px; text-transform: uppercase;
+    letter-spacing: .1em; margin-bottom: 12px; }
+  .mat-line { text-align: center; font-size: 18px; font-weight: 600; margin-bottom: 2px; }
+  .mat-sub { text-align: center; color: var(--dim); font-size: 13px; margin-bottom: 12px; }
+  .last { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 12px; }
+  .last .val { font: 700 20px var(--mono); }
+  .last .meta { color: var(--dim); font-size: 12.5px; margin-top: 2px; }
+  .newflag { color: var(--ok); font-weight: 600; }
+
+  label { display: block; font-size: 12px; color: var(--dim); text-transform: uppercase;
+    letter-spacing: .08em; margin: 10px 2px 4px; }
+  input, select {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 12px; font-size: 17px; font-family: inherit;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .row2 { display: flex; gap: 10px; }
+  .row2 > div { flex: 1; }
+
+  .warnbox { border: 1px solid var(--warn); background: rgba(255,107,94,.08); color: var(--warn);
+    border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-top: 12px; }
+
+  button { border: 0; border-radius: 12px; padding: 14px; font-size: 16px; font-weight: 700;
+    cursor: pointer; font-family: inherit; }
+  button:disabled { opacity: .5; }
+  .btn-primary { background: var(--accent); color: #1a1105; width: 100%; margin-top: 14px; }
+  .btn-primary.override { background: var(--warn); color: #fff; }
+  .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .btn-ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+  .btn-danger { background: var(--panel-2); color: var(--warn); border: 1px solid var(--warn); }
+  .btn-cancel { background: none; color: var(--dim); width: 100%; margin-top: 6px; font-weight: 500; }
+
+  /* confirmation overlay */
+  #overlay { position: fixed; inset: 0; background: rgba(10,14,18,.94); display: flex;
+    flex-direction: column; align-items: center; justify-content: center; z-index: 50; text-align: center; padding: 20px; }
+  #overlay .big { font-size: 22px; font-weight: 700; color: var(--ok); }
+  #overlay .sub { color: var(--dim); margin-top: 8px; font-family: var(--mono); }
+
+  /* session modal */
+  #sessionModal { position: fixed; inset: 0; background: rgba(10,14,18,.94); z-index: 60;
+    padding: 24px; overflow-y: auto; }
+  #sessionModal ul { list-style: none; padding: 0; font-family: var(--mono); font-size: 14px; }
+  #sessionModal li { padding: 8px 0; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+  .tag.updated { border-color: var(--accent); color: var(--accent); }
+  .tag.unchanged { border-color: var(--ok); color: var(--ok); }
+  .tag.retired { border-color: var(--warn); color: var(--warn); }
+
+  .status-line { color: var(--dim); font-size: 13px; text-align: center; margin-top: 8px; min-height: 18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Forge Filament</h1>
+    <div class="counter" id="counter" onclick="toggleSession(true)">0 boxes</div>
+  </header>
+
+  <!-- ============================== SCANNER ============================== -->
+  <div class="card" id="scanCard">
+    <button class="btn-primary" id="btnStartCam" onclick="userStartCamera()" style="margin:0 0 12px">Start camera</button>
+    <div id="reader"></div>
+    <div class="chips">
+      <div class="chip" id="chipSN">SN</div>
+      <div class="chip" id="chipLot">LOT</div>
+      <div class="chip" id="chipPN">P/N</div>
+    </div>
+    <div class="scanhint" id="scanHint">Point at the box tag — needs all three barcodes.</div>
+    <div class="unknown hidden" id="unknownBox">
+      <b>Unrecognized barcode</b> — doesn't match SN / Lot / P/N patterns:
+      <code id="unknownVal"></code>
+    </div>
+    <button class="btn-cancel" onclick="resetBuffer()">Reset codes</button>
+  </div>
+
+  <!-- ============================== NEW MATERIAL ============================== -->
+  <div class="card hidden" id="newMatCard">
+    <div class="mat-line">New material</div>
+    <div class="mat-sub">P/N <span id="nmPn" style="font-family:var(--mono)"></span> is not in the Catalog. Add it once — it applies to every canister of this material.</div>
+    <label>Material</label>
+    <input id="nmMaterial" placeholder="e.g. ULTEM 9085">
+    <label>Color (optional)</label>
+    <input id="nmColor" placeholder="e.g. Black">
+    <div class="row2">
+      <div>
+        <label>Platform</label>
+        <select id="nmPlatform">
+          <option value="F900">F900</option>
+          <option value="F370">F370</option>
+        </select>
+      </div>
+      <div>
+        <label>Start volume (cu in)</label>
+        <input id="nmStart" type="number" inputmode="decimal" placeholder="92">
+      </div>
+    </div>
+    <label>Description (optional)</label>
+    <input id="nmDesc" placeholder="e.g. 250ci FDC spool">
+    <button class="btn-primary" id="nmSave" onclick="saveNewMaterial()">Add to Catalog</button>
+    <button class="btn-cancel" onclick="cancelToScanner()">Cancel</button>
+    <div class="status-line" id="nmStatus"></div>
+  </div>
+
+  <!-- ============================== CANISTER ============================== -->
+  <div class="card hidden" id="canisterCard">
+    <div class="sn-big" id="cSn"></div>
+    <div class="sn-label">Compare to the SN printed on the canister</div>
+    <div class="mat-line" id="cMat"></div>
+    <div class="mat-sub" id="cSub"></div>
+    <div class="last" id="cLast"></div>
+
+    <label>Remaining (cu in)</label>
+    <input id="fRemaining" type="number" inputmode="decimal" oninput="disarmOverride()">
+    <div class="row2">
+      <div>
+        <label>Initials</label>
+        <input id="fInitials" maxlength="4" autocapitalize="characters">
+      </div>
+      <div>
+        <label>Effective date</label>
+        <input id="fDate" type="date">
+      </div>
+    </div>
+
+    <div class="warnbox hidden" id="monoWarn">
+      Entered value is <b>higher</b> than the last logged value. Material only goes down —
+      check for a canister in the wrong box, a typo, or a misread display.
+      Tap again to override.
+    </div>
+
+    <button class="btn-primary" id="btnSubmit" onclick="submitReading()">Log reading</button>
+    <div class="btn-grid">
+      <button class="btn-ghost" id="btnUnchanged" onclick="markUnchanged()">Unchanged</button>
+      <button class="btn-danger" onclick="markEmpty()">Mark empty</button>
+    </div>
+    <button class="btn-danger" style="width:100%; margin-top:10px" onclick="markInop()">Mark inop</button>
+    <button class="btn-cancel" onclick="cancelToScanner()">Cancel — back to scanner</button>
+    <div class="status-line" id="cStatus"></div>
+  </div>
+
+</div>
+
+<!-- confirmation overlay -->
+<div id="overlay" class="hidden">
+  <div class="big" id="ovMain"></div>
+  <div class="sub" id="ovSub"></div>
+</div>
+
+<!-- session detail -->
+<div id="sessionModal" class="hidden">
+  <header>
+    <h1 style="color:var(--text); font-size:16px; margin:0">This sweep</h1>
+    <button class="btn-ghost" style="padding:8px 16px" onclick="toggleSession(false)">Close</button>
+  </header>
+  <ul id="sessionList"></ul>
+</div>
+
+<script>
+// ============================================================ backend link
+// Paste your Apps Script Web App URL (ends in /exec) between the quotes.
+// If left blank, the page asks for it once and remembers it on this phone.
+var SCRIPT_URL = '';
+
+function getScriptUrl() {
+  if (SCRIPT_URL && SCRIPT_URL.indexOf('/exec') !== -1) return SCRIPT_URL;
+  var saved = null;
+  try { saved = localStorage.getItem('forgeScriptUrl'); } catch (e) {}
+  if (saved) return saved;
+  var u = prompt('Paste the Apps Script Web App URL (ends in /exec):');
+  if (u && u.indexOf('/exec') !== -1) {
+    try { localStorage.setItem('forgeScriptUrl', u.trim()); } catch (e) {}
+    return u.trim();
+  }
+  return null;
+}
+
+/**
+ * Calls the Apps Script JSON API. Body is sent as plain text (a "simple"
+ * CORS request) because Apps Script cannot answer preflight OPTIONS.
+ */
+function api(action, params, onOk, onErr) {
+  var url = getScriptUrl();
+  if (!url) { onErr({ message: 'No backend URL set. Reload and paste the /exec URL.' }); return; }
+  var body = JSON.stringify(Object.assign({ action: action }, params || {}));
+  fetch(url, { method: 'POST', body: body })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (res.ok) onOk(res.data);
+      else onErr({ message: res.error });
+    })
+    .catch(function (e) { onErr({ message: 'Network error: ' + e.message }); });
+}
+
+// ============================================================ state
+var PATTERNS = {
+  sn:  /^\d{9}$/,
+  lot: /^\d{6}$/,
+  pn:  /^\d{3}-\d{5}$/
+};
+
+var catalog = {};              // pn -> catalog entry
+var buffer = { sn: null, lot: null, pn: null };
+var current = null;            // { sn, lot, pn, cat, last }
+var scanner = null;
+var scanning = false;
+var lockedSN = null;           // SN just written — ignored until a DIFFERENT SN decodes
+var cooldownUntil = 0;         // absolute ms — ignore everything before this
+var overrideArmed = false;
+var session = { touched: {} }; // sn -> 'updated' | 'unchanged' | 'retired'
+
+// ============================================================ boot
+window.addEventListener('load', function () {
+  document.getElementById('fDate').value = todayStr();
+  var savedInit = null;
+  try { savedInit = sessionStorage.getItem('forgeInitials'); } catch (e) {}
+  if (savedInit) document.getElementById('fInitials').value = savedInit;
+
+  api('getCatalog', {}, function (c) {
+    catalog = c;
+    if (cameraGranted) startScanner();
+    else hint('Tap Start camera to begin.');
+  }, function (e) { hint('Failed to load Catalog: ' + e.message); });
+});
+
+var cameraGranted = false; // set true after the first successful start (user gesture)
+
+function userStartCamera() {
+  hide('btnStartCam');
+  startScanner();
+}
+
+function todayStr() {
+  var d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// ============================================================ scanner
+function startScanner() {
+  show('scanCard'); hide('canisterCard'); hide('newMatCard');
+  resetBuffer();
+  if (scanning) return;
+  scanner = new Html5Qrcode('reader', {
+    formatsToSupport: [Html5QrcodeSupportedFormats.CODE_128],
+    verbose: false
+  });
+  scanner.start(
+    { facingMode: 'environment' },
+    {
+      fps: 10,
+      qrbox: function (w, h) { return { width: Math.floor(w * 0.9), height: Math.floor(h * 0.45) }; }
+    },
+    onDecode,
+    function () {} // per-frame miss — ignore
+  ).then(function () { scanning = true; cameraGranted = true; })
+   .catch(function (e) {
+     scanning = false; scanner = null;
+     hint('Camera blocked. In Safari: tap aA in the address bar → Website Settings → Camera → Allow, then retry. (' + e + ')');
+     var b = document.getElementById('btnStartCam');
+     b.textContent = 'Retry camera';
+     show('btnStartCam');
+   });
+}
+
+function stopScanner() {
+  if (!scanning || !scanner) return Promise.resolve();
+  scanning = false;
+  return scanner.stop().then(function () { scanner.clear(); scanner = null; })
+    .catch(function () { scanner = null; });
+}
+
+function onDecode(text) {
+  text = String(text).trim();
+  var now = Date.now();
+  if (now < cooldownUntil) return;
+
+  var kind = PATTERNS.sn.test(text) ? 'sn'
+           : PATTERNS.lot.test(text) ? 'lot'
+           : PATTERNS.pn.test(text) ? 'pn'
+           : null;
+
+  // CRITICAL: unknown strings are surfaced, never dropped —
+  // this is how a new label format gets discovered.
+  if (!kind) {
+    document.getElementById('unknownVal').textContent = text;
+    show('unknownBox');
+    return;
+  }
+
+  // lockout: after a write, ignore everything until a DIFFERENT SN shows up.
+  if (lockedSN) {
+    if (kind === 'sn' && text !== lockedSN) {
+      lockedSN = null;
+      buffer = { sn: text, lot: null, pn: null };
+      paintChips();
+    }
+    return;
+  }
+
+  // conflict = operator moved to a new box mid-collection: restart buffer on this code.
+  if (buffer[kind] && buffer[kind] !== text) {
+    buffer = { sn: null, lot: null, pn: null };
+  }
+  buffer[kind] = text;
+  paintChips();
+
+  if (buffer.sn && buffer.lot && buffer.pn) allCodesCollected();
+}
+
+function paintChips() {
+  chip('chipSN', buffer.sn, 'SN');
+  chip('chipLot', buffer.lot, 'LOT');
+  chip('chipPN', buffer.pn, 'P/N');
+}
+function chip(id, val, label) {
+  var el = document.getElementById(id);
+  el.textContent = val ? label + ' ✓' : label;
+  el.className = 'chip' + (val ? ' got' : '');
+}
+function resetBuffer() {
+  buffer = { sn: null, lot: null, pn: null };
+  paintChips();
+  hide('unknownBox');
+  hint('Point at the box tag — needs all three barcodes.');
+}
+function hint(msg) { document.getElementById('scanHint').textContent = msg; }
+
+// ============================================================ collected → lookup
+function allCodesCollected() {
+  var snap = { sn: buffer.sn, lot: buffer.lot, pn: buffer.pn };
+  stopScanner();
+
+  var cat = catalog[snap.pn];
+  if (!cat) { openNewMaterialForm(snap); return; }
+
+  loadCanister(snap, cat);
+}
+
+function loadCanister(snap, cat) {
+  hide('scanCard'); hide('newMatCard');
+  api('lookupCanister', { sn: snap.sn }, function (last) {
+    current = { sn: snap.sn, lot: snap.lot, pn: snap.pn, cat: cat, last: last };
+    renderCanister();
+  }, function (e) { alert('Lookup failed: ' + e.message); startScanner(); });
+}
+
+function renderCanister() {
+  var c = current;
+  document.getElementById('cSn').textContent = c.sn;
+  document.getElementById('cMat').textContent =
+    c.cat.material + (c.cat.color ? ' · ' + c.cat.color : '') + ' · ' + c.cat.platform;
+  document.getElementById('cSub').textContent =
+    'P/N ' + c.pn + ' · Lot ' + c.lot + (c.cat.description ? ' · ' + c.cat.description : '');
+
+  var lastEl = document.getElementById('cLast');
+  var remEl = document.getElementById('fRemaining');
+  if (c.last) {
+    lastEl.innerHTML =
+      '<div class="val">' + c.last.remaining + ' cu in</div>' +
+      '<div class="meta">Last logged ' + esc(c.last.effectiveDate) + ' · ' + esc(c.last.initials) +
+      (c.last.lastVerified ? ' · verified ' + esc(c.last.lastVerified) : '') + '</div>' +
+      (c.last.status !== 'active'
+        ? '<div class="meta" style="color:var(--warn)">Status: ' + esc(c.last.status) + '</div>' : '');
+    remEl.value = '';
+    document.getElementById('btnUnchanged').classList.remove('hidden');
+  } else {
+    lastEl.innerHTML =
+      '<div class="newflag">New canister</div>' +
+      '<div class="meta">Start: ' + c.cat.startVolume + ' cu in (from P/N ' + esc(c.pn) + ')</div>';
+    remEl.value = c.cat.startVolume; // pre-filled — operator taps accept, no typing
+    document.getElementById('btnUnchanged').classList.add('hidden');
+  }
+
+  document.getElementById('fDate').value = todayStr();
+  disarmOverride();
+  document.getElementById('cStatus').textContent = '';
+  show('canisterCard');
+}
+
+function cancelToScanner() { startScanner(); }
+
+// ============================================================ new material
+var pendingSnap = null;
+function openNewMaterialForm(snap) {
+  pendingSnap = snap;
+  hide('scanCard'); hide('canisterCard');
+  document.getElementById('nmPn').textContent = snap.pn;
+  ['nmMaterial', 'nmColor', 'nmStart', 'nmDesc'].forEach(function (id) { document.getElementById(id).value = ''; });
+  document.getElementById('nmStatus').textContent = '';
+  show('newMatCard');
+}
+
+function saveNewMaterial() {
+  var m = val('nmMaterial'), col = val('nmColor'), plat = val('nmPlatform'),
+      sv = Number(val('nmStart')), desc = val('nmDesc');
+  if (!m) return setText('nmStatus', 'Material name is required.');
+  if (!(sv > 0)) return setText('nmStatus', 'Start volume must be a positive number.');
+
+  var btn = document.getElementById('nmSave');
+  btn.disabled = true; setText('nmStatus', 'Saving…');
+  api('addCatalogEntry',
+    { pn: pendingSnap.pn, material: m, color: col, platform: plat, startVolume: sv, description: desc },
+    function (freshCatalog) {
+      catalog = freshCatalog;
+      btn.disabled = false;
+      loadCanister(pendingSnap, catalog[pendingSnap.pn]);
+    },
+    function (e) { btn.disabled = false; setText('nmStatus', e.message); });
+}
+
+// ============================================================ actions
+function submitReading() {
+  var remaining = Number(val('fRemaining'));
+  if (isNaN(remaining) || val('fRemaining') === '' || remaining < 0)
+    return setText('cStatus', 'Enter a remaining volume.');
+
+  // CRITICAL: monotonic check — material only goes down.
+  var lastRem = current.last ? current.last.remaining : current.cat.startVolume;
+  if (remaining > lastRem && !overrideArmed) {
+    overrideArmed = true;
+    show('monoWarn');
+    var b = document.getElementById('btnSubmit');
+    b.textContent = 'Override & log anyway';
+    b.classList.add('override');
+    return;
+  }
+
+  var note = overrideArmed ? ('OVERRIDE: increased from ' + lastRem) : '';
+  writeLog('active', remaining, note);
+}
+
+function markUnchanged() {
+  if (!requireInitials()) return;
+  busy(true); setText('cStatus', 'Verifying…');
+  api('recordVerify', { sn: current.sn }, function () {
+    busy(false);
+    recordSession(current.sn, 'unchanged');
+    confirmAndRearm('Verified — SN ' + current.sn, 'no change · ' + (current.last ? current.last.remaining + ' cu in' : ''));
+  }, fail);
+}
+
+function markEmpty() {
+  writeLog('empty', 0, '');
+}
+
+function markInop() {
+  var note = prompt('Inop reason (free text):');
+  if (note === null) return; // cancelled
+  var rem = val('fRemaining') !== '' ? Number(val('fRemaining'))
+          : (current.last ? current.last.remaining : current.cat.startVolume);
+  writeLog('inop', rem, note);
+}
+
+function writeLog(status, remaining, note) {
+  if (!requireInitials()) return;
+  var initials = val('fInitials').trim().toUpperCase();
+  try { sessionStorage.setItem('forgeInitials', initials); } catch (e) {}
+
+  busy(true); setText('cStatus', 'Writing…');
+  api('recordScan', { payload: {
+      sn: current.sn, lot: current.lot, pn: current.pn,
+      remaining: remaining,
+      initials: initials,
+      effectiveDate: val('fDate'),
+      status: status,
+      note: note
+    } }, function (res) {
+    busy(false);
+    recordSession(res.sn, status === 'active' ? 'updated' : 'retired');
+    var main = status === 'active' ? ('Logged — SN ' + res.sn + ' · ' + res.remaining + ' cu in')
+             : status === 'empty' ? ('Marked EMPTY — SN ' + res.sn)
+             : ('Marked INOP — SN ' + res.sn);
+    confirmAndRearm(main, 'Ready for next box…');
+  }, fail);
+}
+
+function requireInitials() {
+  if (!val('fInitials').trim()) { setText('cStatus', 'Initials required.'); return false; }
+  return true;
+}
+
+function fail(e) { busy(false); setText('cStatus', 'FAILED: ' + e.message); }
+
+function busy(on) {
+  ['btnSubmit', 'btnUnchanged'].forEach(function (id) { document.getElementById(id).disabled = on; });
+}
+
+function disarmOverride() {
+  overrideArmed = false;
+  hide('monoWarn');
+  var b = document.getElementById('btnSubmit');
+  b.textContent = 'Log reading';
+  b.classList.remove('override');
+}
+
+// ============================================================ auto-rearm + lockout
+function confirmAndRearm(main, sub) {
+  // lock this SN out until a DIFFERENT SN enters the frame, plus a cooldown —
+  // otherwise the still-in-frame tag re-decodes and loops duplicates forever.
+  lockedSN = current.sn;
+  cooldownUntil = Date.now() + 2500;
+
+  setText('ovMain', main); setText('ovSub', sub);
+  show('overlay'); hide('canisterCard');
+  setTimeout(function () {
+    hide('overlay');
+    startScanner();
+  }, 1500);
+}
+
+// ============================================================ session counter
+function recordSession(sn, kind) {
+  session.touched[sn] = kind;
+  var sns = Object.keys(session.touched);
+  var unchanged = 0, updated = 0, retired = 0;
+  sns.forEach(function (s) {
+    if (session.touched[s] === 'unchanged') unchanged++;
+    else if (session.touched[s] === 'updated') updated++;
+    else retired++;
+  });
+  var txt = sns.length + ' boxes · ' + unchanged + ' unchanged · ' + updated + ' updated';
+  if (retired) txt += ' · ' + retired + ' retired';
+  document.getElementById('counter').textContent = txt;
+}
+
+function toggleSession(open) {
+  if (open) {
+    var ul = document.getElementById('sessionList');
+    ul.innerHTML = '';
+    var sns = Object.keys(session.touched);
+    if (!sns.length) ul.innerHTML = '<li>Nothing scanned yet.</li>';
+    sns.forEach(function (sn) {
+      var li = document.createElement('li');
+      li.innerHTML = '<span>' + esc(sn) + '</span><span class="tag ' + session.touched[sn] + '">' +
+        session.touched[sn] + '</span>';
+      ul.appendChild(li);
+    });
+    show('sessionModal');
+  } else {
+    hide('sessionModal');
+  }
+}
+
+// ============================================================ tiny utils
+function show(id) { document.getElementById(id).classList.remove('hidden'); }
+function hide(id) { document.getElementById(id).classList.add('hidden'); }
+function val(id) { return document.getElementById(id).value; }
+function setText(id, t) { document.getElementById(id).textContent = t; }
+function esc(s) { var d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+</script>
+</body>
+</html>
