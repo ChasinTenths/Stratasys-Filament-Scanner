@@ -172,6 +172,14 @@
   .mi-block { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px; font-size: 14px; }
   .mi-block .k { color: var(--dim); font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; margin: 8px 0 2px; }
   .mi-block .hi { color: var(--warn); font-weight: 700; }
+  .pf-chips { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 10px; position: sticky; top: 0;
+    background: rgba(10,14,18,.96); z-index: 5; -webkit-overflow-scrolling: touch; }
+  .pf-chip { flex: 0 0 auto; font: 600 11.5px var(--mono); padding: 7px 10px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--dim); cursor: pointer; white-space: nowrap; }
+  .pf-chip.cur { border-color: var(--accent); color: var(--accent); }
+  .pf-chip.done { border-color: var(--ok); color: var(--ok); }
+  .vlink { display: inline-block; margin-left: 8px; font-size: 12px; color: var(--accent); text-decoration: underline; }
+  .pf-note { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; font-size: 13px; color: var(--dim); margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -181,7 +189,6 @@
     <h1 id="appTitle" onclick="changeExecUrl()">Forge Stratasys Material Tracker</h1>
     <div class="hdr-right">
       <div class="pill q hidden" id="queuePill" onclick="flushQueue()">0 queued</div>
-      <div class="pill inv" onclick="openInventory()">Inventory</div>
       <div class="counter" id="counter" onclick="toggleSession(true)">0</div>
     </div>
   </header>
@@ -198,14 +205,16 @@
       <button class="btn-primary" style="margin:0" onclick="openScannerScreen()">Update Material Inventory</button>
       <button class="btn-ghost" onclick="openInventory()">Active Inventory</button>
       <button class="btn-ghost" onclick="openMatInfo()">Material Info</button>
+      <button class="btn-primary" style="margin:0; background:var(--panel-2); color:var(--accent); border:1px solid var(--accent)" onclick="openPrint()">Start a Print</button>
     </div>
     <div class="hub-secondary">
       <button class="btn-ghost" onclick="openConsumables()">Consumables</button>
       <button class="btn-ghost" onclick="openUpkeep('cal')">Calibrate Machine</button>
       <button class="btn-ghost" onclick="openUpkeep('mnt')">Perform Maintenance</button>
       <button class="btn-ghost" onclick="openHowTo('vid')">How-To &amp; Guides</button>
+      <button class="btn-ghost" onclick="openStatus()">Printer Status</button>
+      <button class="btn-ghost" onclick="openCloseout(null)">Post-Job Closeout</button>
     </div>
-    <div class="hub-note">Start a Print workflow coming in the next update.</div>
   </div>
 
   <div class="card hidden" id="scanCard">
@@ -331,6 +340,8 @@
   </header>
   <div id="invBody" class="status-line" style="text-align:left"></div>
 
+</div>
+
 <!-- material info -->
 <div id="matModal" class="modal hidden">
   <header style="display:flex; justify-content:space-between; align-items:center">
@@ -349,9 +360,8 @@
     <button class="btn-ghost" style="padding:8px 16px" onclick="hide('conModal')">Close</button>
   </header>
   <div class="seg">
-    <button id="segTips" class="on" onclick="conTab('tips')">Tips (F900)</button>
-    <button id="segHeads" onclick="conTab('heads')">Heads (F370)</button>
-    <button id="segSheets" onclick="conTab('sheets')">Build sheets</button>
+    <button id="segF900" class="on" onclick="conTab('F900')">F900</button>
+    <button id="segF370" onclick="conTab('F370')">F370</button>
   </div>
   <div id="conBody"></div>
 </div>
@@ -377,7 +387,35 @@
   </div>
   <div id="howBody"></div>
 </div>
+
+<!-- printer status -->
+<div id="statusModal" class="modal hidden">
+  <header style="display:flex; justify-content:space-between; align-items:center">
+    <h1>Printer status</h1>
+    <button class="btn-ghost" style="padding:8px 16px" onclick="hide('statusModal')">Close</button>
+  </header>
+  <div id="statusBody"></div>
 </div>
+
+<!-- start a print workflow -->
+<div id="printModal" class="modal hidden">
+  <header style="display:flex; justify-content:space-between; align-items:center">
+    <h1>Start a print</h1>
+    <button class="btn-ghost" style="padding:8px 16px" onclick="closePrint()">Close</button>
+  </header>
+  <div id="pfChips" class="pf-chips"></div>
+  <div id="pfBody"></div>
+</div>
+
+<!-- post-job closeout -->
+<div id="closeModal" class="modal hidden">
+  <header style="display:flex; justify-content:space-between; align-items:center">
+    <h1>Post-job closeout</h1>
+    <button class="btn-ghost" style="padding:8px 16px" onclick="hide('closeModal')">Close</button>
+  </header>
+  <div id="closeBody"></div>
+</div>
+
 
 <script>
 // ============================================================ constants / storage keys
@@ -453,6 +491,10 @@ window.addEventListener('load', function () {
   updateQueuePill();
   flushQueue();
   window.addEventListener('online', flushQueue);
+
+  // deep link: the machine QR stickers and the done-notification email land here
+  var m = location.search.match(/[?&]closeout(?:=([^&]+))?/);
+  if (m) setTimeout(function () { openCloseout(m[1] ? decodeURIComponent(m[1]) : null); }, 400);
 });
 
 /**
@@ -1170,7 +1212,11 @@ function renderMatInfo() {
   h += r.compatibleHeads ? 'Compatible heads: ' + esc(r.compatibleHeads) : '';
   if (!r.compatibleTips && !r.compatibleHeads && !r.assignedTips.length && !r.assignedHeads.length) h += '<span class="warn">not set</span>';
   h += '</div>';
-  h += '<div class="k">Drying</div><div>' + (r.drying ? esc(r.drying) : '<span class="warn">not set</span>') + '</div>';
+  h += '<div class="k">Drying \u2014 GID (Get it Dry) / KID (Keep it Dry)</div><div>' + (r.drying ? esc(r.drying) : '<span class="warn">not set</span>') + '</div>';
+  if (r.tipLife && r.tipLife.length) {
+    h += '<div class="k">Tip life (max cu in through tip, F900 guide)</div><div>' +
+      r.tipLife.map(function (t) { return esc(t.tip) + ': ' + t.maxCuIn; }).join(' \u00b7 ') + '</div>';
+  }
   h += '<div class="k">Build sheet</div><div>' + (r.buildSheet ? esc(r.buildSheet) : '<span class="warn">not set</span>') + '</div>';
   if (r.ovenTempC !== null) h += '<div class="k">Oven temp</div><div>' + r.ovenTempC + '°C</div>';
   if (r.notes) h += '<div class="k">Notes</div><div>' + esc(r.notes) + '</div>';
@@ -1186,15 +1232,31 @@ function openConsumables() {
   api('getConsumables').then(function (d) { conCache = d; conTab(conCur); })
     .catch(function (e) { document.getElementById('conBody').textContent = 'Could not load: ' + e.message; });
 }
+var SHEET_LABELS = {
+  'F900 Clear Small': 'Clear · Small 16\u00d718.5\u2033', 'F900 Clear Large': 'Clear · Large 26\u00d738\u2033',
+  'F900 Darkened Small': 'Darkened · Small 16\u00d718.5\u2033', 'F900 Darkened Large': 'Darkened · Large 26\u00d738\u2033',
+  'F900 Green Small': 'Green · Small 16\u00d718.5\u2033', 'F900 Green Large': 'Green · Large 26\u00d738\u2033',
+  'F370 Standard Tray': 'Standard tray (all except Diran)', 'F370 High-Temp Tray': 'High-Temp tray (Diran only)'
+};
+var HEAD_LIFE_INFO = 'Head life: Standard 1500 h (warn at 1350) \u00b7 ABS-CF10 700 h. Change heads at the odometer limit.';
 function conTab(which) {
   conCur = which;
-  ['segTips', 'segHeads', 'segSheets'].forEach(function (id) { document.getElementById(id).classList.remove('on'); });
-  document.getElementById(which === 'tips' ? 'segTips' : which === 'heads' ? 'segHeads' : 'segSheets').classList.add('on');
+  document.getElementById('segF900').classList.toggle('on', which === 'F900');
+  document.getElementById('segF370').classList.toggle('on', which === 'F370');
   var b = document.getElementById('conBody');
-  if (!conCache) { b.textContent = 'Loading…'; return; }
-  if (which === 'tips') renderTips(b);
-  else if (which === 'heads') renderHeads(b);
-  else renderSheets(b);
+  if (!conCache) { b.textContent = 'Loading\u2026'; return; }
+  var wrap = document.createElement('div');
+  if (which === 'F900') {
+    var t = document.createElement('div'); renderTips(t);
+    var s = document.createElement('div'); renderSheetGroup(s, 'F900', 'Build sheets \u2014 Clear: ABS/ASA/PC \u00b7 Darkened: PPSF/Antero/ULTEM \u00b7 Green: Nylons');
+    wrap.appendChild(t); wrap.appendChild(s);
+  } else {
+    var hd = document.createElement('div'); renderHeads(hd);
+    hd.insertAdjacentHTML('afterbegin', '<div class="mi-block"><div class="k">Head life</div>' + HEAD_LIFE_INFO + '</div>');
+    var tr = document.createElement('div'); renderSheetGroup(tr, 'F370', 'Build trays');
+    wrap.appendChild(hd); wrap.appendChild(tr);
+  }
+  b.innerHTML = ''; b.appendChild(wrap);
 }
 function refreshCon() { api('getConsumables').then(function (d) { conCache = d; conTab(conCur); }); }
 
@@ -1273,11 +1335,12 @@ function headRetirePrompt(serial) {
     .catch(function (e) { alert(e.message); });
 }
 
-function renderSheets(b) {
-  var h = '';
-  ['F900', 'F370'].forEach(function (t) {
-    var s = conCache.sheets[t] || { unused: 0, used: 0 };
-    h += '<div class="lrow"><div class="l1"><b>' + t + '</b><span><span class="okc">' + s.unused + ' unused</span> · ' + s.used + ' used</span></div>' +
+function renderSheetGroup(b, platform, title) {
+  var h = '<div class="mi-block" style="margin-top:12px"><div class="k">' + esc(title) + '</div>';
+  Object.keys(conCache.sheets).forEach(function (t) {
+    if (t.indexOf(platform) !== 0) return;
+    var s = conCache.sheets[t];
+    h += '<div class="lrow"><div class="l1"><b>' + esc(SHEET_LABELS[t] || t) + '</b><span><span class="okc">' + s.unused + ' unused</span> \u00b7 ' + s.used + ' used</span></div>' +
       '<div class="btn-grid" style="margin-top:6px">' +
       '<button class="btn-ghost" style="padding:8px" onclick="sheetDo(\'' + t + '\',\'restock\')">Restock</button>' +
       '<button class="btn-ghost" style="padding:8px" onclick="sheetDo(\'' + t + '\',\'use\')">Pull for print</button>' +
@@ -1285,6 +1348,7 @@ function renderSheets(b) {
       '<button class="btn-danger" style="padding:8px" onclick="sheetDo(\'' + t + '\',\'discardUsed\')">Discard used</button>' +
       '</div></div>';
   });
+  h += '</div>';
   b.innerHTML = h;
 }
 function sheetDo(type, act) {
@@ -1322,8 +1386,8 @@ function renderUpkeep() {
       h += '</div>';
     }
   } else {
-    h += '<label>Maintenance type</label><select id="upkType">' + MAINT_TYPES.map(function (m) { return '<option>' + m + '</option>'; }).join('') + '</select>';
-    h += '<div class="cautionbox" style="margin-top:10px">Requires a vacuum. Don\u2019t use bristle attachments if the printer is hot.</div>';
+    h += '<label>Maintenance performed (select all that apply)</label><div id="upkTypes"></div>';
+    h += '<div class="cautionbox hidden" id="vacNote" style="margin-top:10px">Requires a vacuum. Don\u2019t use bristle attachments if the printer is hot.</div>';
     h += '<label>Note (optional)</label><input id="upkNote">';
     h += '<button class="btn-primary" onclick="submitUpkeep()">Log maintenance</button>';
     if (upkCache.maintenance.length) {
@@ -1335,12 +1399,44 @@ function renderUpkeep() {
     }
   }
   b.innerHTML = h;
+  if (upkMode === 'mnt') {
+    document.getElementById('upkMachine').addEventListener('change', paintMaintTypes);
+    paintMaintTypes();
+  }
+}
+function maintListFor(machine) {
+  var plat = machine === 'F900' ? 'F900' : 'F370';
+  var cat = (upkCache.maintCatalog || {})[plat] || { daily: [], other: [] };
+  return { plat: plat, items: cat.daily.concat(cat.other) };
+}
+function paintMaintTypes() {
+  var machine = val('upkMachine');
+  var info = maintListFor(machine);
+  var box = document.getElementById('upkTypes');
+  box.innerHTML = info.items.map(function (it, i) {
+    return '<label style="display:flex; gap:10px; align-items:center; text-transform:none; font-size:14.5px; color:var(--text); margin:8px 2px">' +
+      '<input type="checkbox" style="width:20px; height:20px" data-vac="' + (it.vacuum ? '1' : '') + '" value="' + esc(it.t) + '" onchange="maintVacCheck()">' +
+      esc(it.t) + '</label>';
+  }).join('');
+  maintVacCheck();
+}
+function maintVacCheck() {
+  // conditional note: F900 only, and only when a vacuum-related item is checked
+  var machine = val('upkMachine');
+  var anyVac = false;
+  document.querySelectorAll('#upkTypes input:checked').forEach(function (c) { if (c.dataset.vac) anyVac = true; });
+  document.getElementById('vacNote').classList.toggle('hidden', !(machine === 'F900' && anyVac));
+}
+function selectedMaintTypes() {
+  var out = [];
+  document.querySelectorAll('#upkTypes input:checked').forEach(function (c) { out.push(c.value); });
+  return out;
 }
 function submitUpkeep() {
   var machine = val('upkMachine'), note = val('upkNote');
   var p = upkMode === 'cal'
     ? api('logCalibration', { machine: machine, material: val('upkMaterial'), name: opName(), note: note })
-    : api('logMaintenance', { machine: machine, mtype: val('upkType'), name: opName(), note: note });
+    : api('logMaintenance', { machine: machine, mtype: selectedMaintTypes(), name: opName(), note: note });
   p.then(function () { toast('Logged.'); openUpkeep(upkMode); })
    .catch(function (e) { alert(e.message); });
 }
@@ -1416,6 +1512,435 @@ function toast(msg) {
   document.getElementById('ovMain').classList.remove('queued');
   show('overlay');
   setTimeout(function () { hide('overlay'); }, 1400);
+}
+
+// ============================================================ iteration 4: printer status
+var VID = {
+  grabcad: 'https://videos.stratasys.com/watch/crN8Q5eGi693NHNwUMRf93',
+  f900load: 'https://videos.stratasys.com/watch/AtCdk6Cv3LRwVGjMfYdsgd',
+  f900tipcal: 'https://videos.stratasys.com/watch/mQ5TR1rXS9mG4k2AQxnqJt',
+  f900daily: 'https://videos.stratasys.com/watch/KKKqv6MGXUUYsjo5ARo88M',
+  f370tipcal: 'https://videos.stratasys.com/watch/qMj4yGbjUWH6FhbqVQFjh4',
+  f370tray: 'https://videos.stratasys.com/watch/4Wrc6pF9KnCQpF5dU4fdBB'
+};
+function vlink(url, label) { return url ? '<a class="vlink" href="' + url + '" target="_blank" rel="noopener">' + (label || 'How-to video') + ' \u2197</a>' : ''; }
+
+function openStatus() {
+  show('statusModal');
+  var b = document.getElementById('statusBody');
+  b.textContent = 'Loading\u2026';
+  api('getPrinterStatus').then(function (rows) {
+    var h = '';
+    rows.forEach(function (s) {
+      h += '<div class="mi-block"><div class="l1" style="display:flex; justify-content:space-between"><b>' + esc(s.machine) + '</b>' +
+        (s.lastJobAt ? '<span class="l2">' + esc(s.lastJobAt) + '</span>' : '') + '</div>';
+      h += '<div class="k">Material</div><div>' + (s.material ? esc(s.material) : '<span class="warn">unknown</span>') + '</div>';
+      if (s.machine === 'F900') h += '<div class="k">Tip</div><div>' + (s.tipHead ? esc(s.tipHead) : '<span class="warn">unknown</span>') + '</div>';
+      else if (s.machine !== 'FDC') h += '<div class="k">Head</div><div>' + (s.tipHead ? esc(s.tipHead) + (s.headMaterial ? ' \u00b7 assigned to ' + esc(s.headMaterial) : '') : '<span class="warn">none assigned</span>') + '</div>';
+      if (s.sheet) h += '<div class="k">Build sheet</div><div>' + esc(s.sheet) + '</div>';
+      if (s.machine === 'FDC') h += '<button class="btn-ghost" style="width:100%; padding:9px; margin-top:8px" onclick="setFdc()">Update FDC material</button>';
+      h += '</div>';
+    });
+    b.innerHTML = h + '<div class="pf-note">Derived from the latest logged job per machine, head assignments, and the FDC entry \u2014 not a live machine connection.</div>';
+  }).catch(function (e) { b.textContent = 'Could not load: ' + e.message; });
+}
+function setFdc() {
+  var m = prompt('Material currently loaded in the FDC:');
+  if (!m) return;
+  api('setFdcMaterial', { material: m, name: opName() }).then(function () { openStatus(); }).catch(function (e) { alert(e.message); });
+}
+
+// ============================================================ start-a-print workflow
+var pf = null; // workflow state
+
+function openPrint() {
+  pf = { stepIdx: 0, done: {}, machine: null, material: null, matRow: null, alreadyLoaded: null,
+    enough: null, tipHead: '', sheetType: '', hours: '', jamsOpt: null, mi: null, con: null, status: null };
+  show('printModal');
+  document.getElementById('pfBody').textContent = 'Loading\u2026';
+  Promise.all([api('getMaterialInfo'), api('getConsumables'), api('getPrinterStatus'), api('getUpkeep')])
+    .then(function (r) { pf.mi = r[0]; pf.con = r[1]; pf.status = r[2]; pf.upk = r[3]; renderPf(); })
+    .catch(function (e) { document.getElementById('pfBody').textContent = 'Could not load: ' + e.message; });
+}
+function closePrint() { hide('printModal'); }
+
+function pfPlatform() { return pf.machine === 'F900' ? 'F900' : 'F370'; }
+function pfStatusFor() {
+  var s = null;
+  (pf.status || []).forEach(function (x) { if (x.machine === pf.machine) s = x; });
+  return s || {};
+}
+function pfMatChanged() {
+  var cur = (pfStatusFor().material || '').toLowerCase().trim();
+  return !cur || cur !== String(pf.material || '').toLowerCase().trim();
+}
+function pfHighTemp() { return !!(pf.matRow && pf.matRow.highTemp); }
+function pfSoluble() { return !!(pf.matRow && pf.matRow.soluble); }
+
+/** Dynamic step list — conditional steps appear/disappear as answers change. */
+function pfSteps() {
+  var steps = [
+    { id: 'machine', t: 'Printer' },
+    { id: 'slice', t: 'Slice / CMB' },
+    { id: 'loadcmb', t: 'Load CMB' },
+    { id: 'material', t: 'Material' }
+  ];
+  if (pf.material) {
+    if (pfSoluble()) steps.push({ id: 'ultra', t: 'Ultrasonic' });
+    steps.push({ id: 'sheet', t: 'Build sheet' });
+    if (pfMatChanged()) {
+      steps.push({ id: 'tiphead', t: pfPlatform() === 'F900' ? 'Tip' : 'Head' });
+      if (pfHighTemp() && pf.machine === 'F900') steps.push({ id: 'maint', t: 'Maintenance!' });
+      steps.push({ id: 'change', t: 'Change material' });
+    } else {
+      steps.push({ id: 'qty', t: 'Enough material?' });
+    }
+    if (pf.enough === false) steps.push({ id: 'loadmat', t: 'Load material' });
+    if (pfMatChanged()) steps.push({ id: 'cal', t: 'Calibrate' });
+    if (!(pfHighTemp() && pf.machine === 'F900' && pfMatChanged())) steps.push({ id: 'maint', t: 'Maintenance' });
+    steps.push({ id: 'duration', t: 'Duration' });
+    steps.push({ id: 'jams', t: 'Job tracking' });
+    steps.push({ id: 'confirm', t: 'Start!' });
+  }
+  // dedupe maint if both branches added it
+  var seen = {}, out = [];
+  steps.forEach(function (s) { if (!seen[s.id]) { seen[s.id] = 1; out.push(s); } });
+  return out;
+}
+
+function pfJump(i) { pf.stepIdx = i; renderPf(); }
+function pfDone(adv) {
+  var steps = pfSteps();
+  pf.done[steps[pf.stepIdx].id] = true;
+  if (adv !== false && pf.stepIdx < pfSteps().length - 1) pf.stepIdx++;
+  renderPf();
+}
+function pfSkip() { pfDone(true); }
+
+function renderPf() {
+  var steps = pfSteps();
+  if (pf.stepIdx >= steps.length) pf.stepIdx = steps.length - 1;
+  var chips = document.getElementById('pfChips');
+  chips.innerHTML = steps.map(function (s, i) {
+    var cls = 'pf-chip' + (i === pf.stepIdx ? ' cur' : '') + (pf.done[s.id] ? ' done' : '');
+    return '<span class="' + cls + '" onclick="pfJump(' + i + ')">' + (pf.done[s.id] ? '\u2713 ' : (i + 1) + '. ') + esc(s.t) + '</span>';
+  }).join('');
+  var step = steps[pf.stepIdx];
+  var b = document.getElementById('pfBody');
+  b.innerHTML = pfStepHtml(step.id);
+  var cur = chips.children[pf.stepIdx];
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ inline: 'center', block: 'nearest' });
+}
+
+function pfBtns(extra) {
+  return '<div class="btn-grid" style="margin-top:14px">' + (extra || '') +
+    '<button class="btn-ghost" onclick="pfSkip()">Already done \u2014 skip</button></div>';
+}
+
+function pfStepHtml(id) {
+  var plat = pfPlatform();
+  var st = pfStatusFor();
+  switch (id) {
+    case 'machine':
+      return '<label>Which printer?</label>' +
+        ['F900', 'Left F370', 'Right F370'].map(function (m) {
+          return '<button class="' + (pf.machine === m ? 'btn-primary' : 'btn-ghost') + '" style="width:100%; margin-top:8px" onclick="pf.machine=\'' + m + '\'; pfDone()">' + m + '</button>';
+        }).join('');
+    case 'slice':
+      return '<div class="mi-block">Slice the part in GrabCAD Print and export the <b>CMB</b> file.' + vlink(VID.grabcad, 'GrabCAD video') + '</div>' + pfBtns(
+        '<button class="btn-primary" style="margin:0" onclick="pfDone()">CMB exported</button>');
+    case 'loadcmb':
+      return '<div class="mi-block">' + (pf.machine === 'F900'
+        ? 'Load the CMB onto the <b>F900</b> through <b>Control Center</b> on the shop PC, then select the job in the printer queue.'
+        : 'Copy the CMB to a <b>USB drive</b> and load it on the <b>' + esc(pf.machine) + '</b> via the front USB port.') + '</div>' + pfBtns(
+        '<button class="btn-primary" style="margin:0" onclick="pfDone()">CMB loaded</button>');
+    case 'material': {
+      var opts = (pf.mi || []).filter(function (r) { return r.inInventory && r.platform === plat; });
+      var h = '<label>Material (from Inventory only)</label>';
+      if (!opts.length) h += '<div class="warnbox" style="display:block">No ' + plat + ' materials in active Inventory.</div>';
+      h += opts.map(function (r) {
+        var sel = pf.material === r.material;
+        return '<button class="' + (sel ? 'btn-primary' : 'btn-ghost') + '" style="width:100%; margin-top:8px; text-align:left" ' +
+          'onclick="pfPickMaterial(\'' + esc(r.material).replace(/'/g, "\\'") + '\')">' + esc(r.material) +
+          ' <span style="float:right; font-family:var(--mono); font-size:12.5px">' + r.inventoryRemaining + ' ci</span></button>';
+      }).join('');
+      if (pf.material) {
+        h += '<div class="pf-note">The box of the canister/spool is stored on top of the machine.</div>';
+        if (pfHighTemp()) h += '<div class="warnbox" style="display:block; margin-top:8px">High-temp material \u2014 platen/purge-bin maintenance is mandatory before converting the F900. It has been added as a required early step.</div>';
+        if (st.material && pfMatChanged()) h += '<div class="pf-note">Machine currently has <b>' + esc(st.material) + '</b> \u2014 a material change (and ' + (plat === 'F900' ? 'tip' : 'head') + ' check) has been added to the flow.</div>';
+        if (!pfMatChanged()) h += '<div class="pf-note">Same material already active on ' + esc(pf.machine) + ' \u2014 tip/head stays as installed.</div>';
+        h += vlink(plat === 'F900' ? VID.f900load : null, 'Loading/unloading video');
+        h += '<button class="btn-primary" onclick="pfDone()">Continue</button>';
+      }
+      return h;
+    }
+    case 'ultra':
+      return '<div class="cautionbox" style="display:block">' + esc(pf.material) + ' uses <b>soluble support</b>. Ensure the ultrasonic tank is turned ON \u2014 it takes hours to get up to temp.</div>' +
+        pfBtns('<button class="btn-primary" style="margin:0" onclick="pfDone()">Tank is on</button>');
+    case 'sheet': {
+      var h = '<label>Build ' + (plat === 'F900' ? 'sheet' : 'tray') + '</label>';
+      var groups = Object.keys(pf.con.sheets || {}).filter(function (t) { return t.indexOf(plat) === 0; });
+      var rec = pf.matRow && pf.matRow.buildSheet ? pf.matRow.buildSheet : '';
+      if (rec) h += '<div class="pf-note">Material Info recommends: <b>' + esc(rec) + '</b></div>';
+      groups.forEach(function (t) {
+        var s = pf.con.sheets[t];
+        h += '<button class="' + (pf.sheetType === t ? 'btn-primary' : 'btn-ghost') + '" style="width:100%; margin-top:8px; text-align:left" onclick="pfPickSheet(\'' + t + '\')">' +
+          esc(SHEET_LABELS[t] || t) + ' <span style="float:right; font-family:var(--mono); font-size:12.5px">' + s.unused + ' unused</span></button>';
+      });
+      h += '<button class="btn-ghost" style="width:100%; margin-top:8px" onclick="pf.sheetType=\'(reusing sheet already out)\'; pfDone()">Reusing a sheet already out</button>';
+      h += vlink(plat === 'F370' ? VID.f370tray : null, 'Install/remove tray video');
+      return h + pfBtns('');
+    }
+    case 'tiphead': {
+      if (plat === 'F900') {
+        var tips = (pf.con.tips || []).filter(function (t) { return normEq(t.assignedMaterial, pf.material) || !t.assignedMaterial; });
+        var h2 = '<label>Tip for ' + esc(pf.material) + '</label>';
+        if (pf.matRow && pf.matRow.compatibleTips) h2 += '<div class="pf-note">Compatible: ' + esc(pf.matRow.compatibleTips) + '</div>';
+        h2 += tips.map(function (t) {
+          return '<button class="' + (pf.tipHead === t.tipId ? 'btn-primary' : 'btn-ghost') + '" style="width:100%; margin-top:8px; text-align:left" onclick="pfPickTip(\'' + t.tipId + '\')">' +
+            t.tipId + (t.usage !== null ? ' <span style="float:right; font-family:var(--mono); font-size:12.5px">' + t.usage + ' ci used</span>' : '') + '</button>';
+        }).join('');
+        h2 += '<button class="btn-ghost" style="width:100%; margin-top:8px" onclick="tipAddPrompt()">+ New tip (then reopen this step)</button>';
+        h2 += '<div class="pf-note">In-use tip tubes are stored in the top-left of the canister bay door.</div>';
+        return h2 + pfBtns('');
+      }
+      var head = null;
+      (pf.con.heads || []).forEach(function (hd) { if (normEq(hd.assignedMaterial, pf.material)) head = hd; });
+      if (head) {
+        pf.tipHead = head.serial;
+        return '<div class="mi-block">Head <b class="mono">' + esc(head.serial) + '</b> is already assigned to ' + esc(pf.material) + '. It stays with the material \u2014 nothing to select.</div>' +
+          pfBtns('<button class="btn-primary" style="margin:0" onclick="pfDone()">Continue</button>');
+      }
+      return '<div class="mi-block">No head is assigned to <b>' + esc(pf.material) + '</b> yet. Scan/type the serial off the new head to register it \u2014 whoever performs the material change logs the head.</div>' +
+        pfBtns('<button class="btn-primary" style="margin:0" onclick="pfRegisterHead()">Register head</button>');
+    }
+    case 'maint': {
+      var mand = pfHighTemp() && pf.machine === 'F900' && pfMatChanged();
+      var items = (pf.upk.maintCatalog[plat] || {}).daily || [];
+      return '<div class="' + (mand ? 'warnbox' : 'mi-block') + '" style="display:block">' +
+        (mand ? '<b>MANDATORY before converting the F900 to a high-temp material:</b> ' : 'Daily maintenance \u2014 recommended before the job (can be done before or after): ') +
+        items.map(function (i) { return i.t; }).join(' + ') + '.' +
+        (plat === 'F900' ? '<div class="pf-note">Needs a vacuum. Don\u2019t use bristle attachments if the printer is hot.</div>' : '') +
+        vlink(plat === 'F900' ? VID.f900daily : null, 'Daily maintenance video') + '</div>' +
+        '<div class="btn-grid" style="margin-top:14px">' +
+        '<button class="btn-primary" style="margin:0" onclick="pfLogMaint()">Done \u2014 log it</button>' +
+        (mand ? '' : '<button class="btn-ghost" onclick="pfSkip()">Skip for now</button>') + '</div>';
+    }
+    case 'change':
+      return '<div class="mi-block">Run the machine\u2019s own <b>change material wizard</b> on ' + esc(pf.machine) + ' (unload current, load ' + esc(pf.material) + ').' +
+        '<div class="pf-note">Removing a canister/spool? Update the material log on the box' + (plat === 'F900' ? ' \u2014 and the F900 canister\u2019s own log too' : '') + '.</div>' +
+        '<div class="pf-note">Loading a NEW canister/spool? Apply a material log label and note the date opened.</div>' +
+        vlink(plat === 'F900' ? VID.f900load : null, 'Loading/unloading video') + '</div>' +
+        pfBtns('<button class="btn-primary" style="margin:0" onclick="pfDone()">Material changed</button>');
+    case 'qty':
+      return '<label>Is there enough ' + esc(pf.material) + ' loaded to finish this print?</label>' +
+        '<div class="btn-grid" style="margin-top:10px">' +
+        '<button class="btn-primary" style="margin:0" onclick="pf.enough=true; pfDone()">Yes</button>' +
+        '<button class="btn-caution" onclick="pf.enough=false; pfDone()">No \u2014 need to load more</button></div>';
+    case 'loadmat':
+      return '<div class="mi-block">Load additional ' + esc(pf.material) + ' onto ' + esc(pf.machine) + '.' +
+        '<div class="pf-note">Removing a canister/spool? Update the material log on the box' + (plat === 'F900' ? ' \u2014 and the F900 canister\u2019s own log too' : '') + '.</div>' +
+        '<div class="pf-note">Loading a NEW canister/spool? Apply a material log label and note the date opened.</div></div>' +
+        pfBtns('<button class="btn-primary" style="margin:0" onclick="pfDone()">Loaded</button>');
+    case 'cal': {
+      var last = null;
+      (pf.upk.calibrations || []).forEach(function (c) {
+        if (c.machine === pf.machine && normEq(c.material, pf.material)) last = c;
+      });
+      return '<div class="mi-block">Run the calibration print for ' + esc(pf.material) + ' on ' + esc(pf.machine) + ' (after the ' + (plat === 'F900' ? 'tip is' : 'head is') + ' installed).' +
+        (last ? '<div class="pf-note">Last calibrated for this material: ' + esc(last.date) + ' by ' + esc(last.name) + '</div>' : '<div class="pf-note">No calibration on record for this machine + material.</div>') +
+        vlink(plat === 'F900' ? VID.f900tipcal : VID.f370tipcal, 'Calibration video') + '</div>' +
+        '<div class="btn-grid" style="margin-top:14px">' +
+        '<button class="btn-primary" style="margin:0" onclick="pfLogCal()">Calibrated \u2014 log it</button>' +
+        '<button class="btn-ghost" onclick="pfSkip()">Already calibrated \u2014 skip</button></div>';
+    }
+    case 'duration':
+      return '<label>Expected print duration (hours)</label>' +
+        '<input id="pfHours" type="number" inputmode="decimal" value="' + esc(pf.hours) + '" placeholder="e.g. 14.5">' +
+        '<button class="btn-primary" onclick="pf.hours=val(\'pfHours\'); if(Number(pf.hours)>0) pfDone(); else alert(\'Enter the expected hours.\')">Continue</button>';
+    case 'jams': {
+      var saved = localStorage.getItem('forgeJamsEmail') || '';
+      return '<label>Job Tracking (JAMS)</label>' +
+        '<div class="pf-note">Optionally email this job\u2019s info to yourself for manual entry into JAMS. This does NOT send anything to JAMS itself.</div>' +
+        '<div class="btn-grid" style="margin-top:10px">' +
+        '<button class="btn-primary" style="margin:0" onclick="pfJams(true, \'' + esc(saved) + '\')">Yes \u2014 email me</button>' +
+        '<button class="btn-ghost" onclick="pf.jamsOpt=null; pfDone()">No thanks</button></div>' +
+        (saved ? '<div class="pf-note">Saved address: ' + esc(saved) + '</div>' : '');
+    }
+    case 'confirm': {
+      var h3 = '<div class="mi-block"><div class="k">Ready to start</div>' +
+        '<div>' + esc(pf.machine) + ' \u00b7 ' + esc(pf.material) + (pf.tipHead ? ' \u00b7 ' + esc(pf.tipHead) : '') +
+        (pf.sheetType ? ' \u00b7 ' + esc(SHEET_LABELS[pf.sheetType] || pf.sheetType) : '') + ' \u00b7 ' + esc(pf.hours) + ' h</div>' +
+        (pf.jamsOpt ? '<div class="l2">JAMS email \u2192 ' + esc(pf.jamsOpt) + '</div>' : '') + '</div>' +
+        '<label style="display:flex; gap:10px; align-items:center; text-transform:none; font-size:14.5px; color:var(--text)">' +
+        '<input type="checkbox" id="pfNotify" style="width:20px; height:20px" checked> Email me when the print should be done (with a closeout link)</label>' +
+        '<input id="pfNotifyEmail" placeholder="notify email" value="' + esc(localStorage.getItem('forgeJamsEmail') || '') + '" style="margin-top:8px">' +
+        '<button class="btn-primary" onclick="pfStart()">Start print \u2014 press GO on the machine</button>';
+      return h3;
+    }
+  }
+  return '';
+}
+function normEq(a, b) { return String(a || '').toLowerCase().trim() === String(b || '').toLowerCase().trim(); }
+
+function pfPickMaterial(m) {
+  pf.material = m;
+  pf.matRow = null;
+  (pf.mi || []).forEach(function (r) { if (r.material === m && r.platform === pfPlatform()) pf.matRow = r; });
+  renderPf();
+}
+function pfPickSheet(t) {
+  api('sheetAction', { type: t, act: 'use', qty: 1, name: opName(), note: 'print workflow' })
+    .then(function () { pf.sheetType = t; refreshConCacheInPf(t); pfDone(); })
+    .catch(function (e) { alert(e.message); });
+}
+function refreshConCacheInPf(t) {
+  if (pf.con && pf.con.sheets && pf.con.sheets[t]) { pf.con.sheets[t].unused--; pf.con.sheets[t].used++; }
+}
+function pfPickTip(id) { pf.tipHead = id; pfDone(); }
+function pfRegisterHead() {
+  var serial = prompt('Head serial number (from the head barcode):');
+  if (!serial) return;
+  api('registerHead', { serial: serial, machine: pf.machine, material: pf.material, name: opName() })
+    .then(function () { pf.tipHead = serial; toast('Head ' + serial + ' registered'); pfDone(); })
+    .catch(function (e) { alert(e.message); });
+}
+function pfLogMaint() {
+  var items = ((pf.upk.maintCatalog[pfPlatform()] || {}).daily || []).map(function (i) { return i.t; });
+  api('logMaintenance', { machine: pf.machine, mtype: items, name: opName(), note: 'print workflow' })
+    .then(function () { toast('Maintenance logged'); pfDone(); })
+    .catch(function (e) { alert(e.message); });
+}
+function pfLogCal() {
+  api('logCalibration', { machine: pf.machine, material: pf.material, name: opName(), note: 'print workflow' })
+    .then(function () { toast('Calibration logged'); pfDone(); })
+    .catch(function (e) { alert(e.message); });
+}
+function pfJams(yes, saved) {
+  var email = prompt('Email address for the Job Tracking info:', saved || '');
+  if (!email) return;
+  if (confirm('Remember this address on this device for future prints?\n(OK = save, Cancel = ask each time)')) {
+    localStorage.setItem('forgeJamsEmail', email.trim());
+  }
+  pf.jamsOpt = email.trim();
+  pfDone();
+}
+function pfStart() {
+  var notify = document.getElementById('pfNotify').checked;
+  var email = val('pfNotifyEmail').trim();
+  if (notify && !email) return alert('Enter an email for the done-notification, or untick it.');
+  api('startJob', {
+    machine: pf.machine, material: pf.material, tipHead: pf.tipHead, sheetType: pf.sheetType,
+    expectedHours: Number(pf.hours), notifyEmail: notify ? email : '', name: opName(), note: ''
+  }).then(function (r) {
+    if (pf.jamsOpt) {
+      api('sendJobEmail', { jobId: r.jobId, to: pf.jamsOpt, name: opName() }).catch(function (e) { alert('Job started, but JAMS email failed: ' + e.message); });
+    }
+    hide('printModal');
+    toast('Job ' + r.jobId + ' started \u2014 press GO on the machine');
+  }).catch(function (e) { alert(e.message); });
+}
+
+// ============================================================ post-job closeout
+var co = null;
+function openCloseout(jobId) {
+  show('closeModal');
+  var b = document.getElementById('closeBody');
+  b.textContent = 'Loading\u2026';
+  api('getOpenJobs').then(function (jobs) {
+    if (!jobs.length) { b.innerHTML = '<div class="mi-block">No open jobs. Every started print has been closed out.</div>'; return; }
+    var job = null;
+    jobs.forEach(function (j) { if (j.jobId === jobId) job = j; });
+    if (!job && jobs.length === 1) job = jobs[0];
+    if (!job) {
+      b.innerHTML = '<label>Which job?</label>' + jobs.map(function (j) {
+        return '<button class="btn-ghost" style="width:100%; margin-top:8px; text-align:left" onclick="openCloseout(\'' + j.jobId + '\')">' +
+          esc(j.machine) + ' \u00b7 ' + esc(j.material) + ' <span class="l2">started ' + esc(j.at) + ' by ' + esc(j.by) + '</span></button>';
+      }).join('');
+      return;
+    }
+    co = { job: job, soluble: false };
+    // soluble check from material info
+    api('getMaterialInfo').then(function (mi) {
+      mi.forEach(function (r) { if (normEq(r.material, job.material) && (r.platform === (job.machine === 'F900' ? 'F900' : 'F370'))) co.soluble = r.soluble; });
+      renderCloseout();
+    }).catch(function () { renderCloseout(); });
+  }).catch(function (e) { b.textContent = 'Could not load: ' + e.message; });
+}
+function renderCloseout() {
+  var j = co.job;
+  var b = document.getElementById('closeBody');
+  var h = '<div class="mi-block"><b>' + esc(j.machine) + ' \u00b7 ' + esc(j.material) + '</b><div class="l2">started ' + esc(j.at) + ' by ' + esc(j.by) + ' \u00b7 expected ' + j.expectedHours + ' h</div></div>';
+  h += '<label>Material used this job (cu in)</label><input id="coUsage" type="number" inputmode="decimal" placeholder="from the machine\u2019s job report">';
+  h += '<div class="pf-note">Also log the canister/spool\u2019s new remaining volume with a normal scan, and update the material log on the box' + (j.machine === 'F900' ? ' and the F900 canister log' : '') + '.</div>';
+  if (j.machine === 'F900' && j.tipHead) {
+    h += '<label>Tip odometer now (' + esc(j.tipHead) + ') \u2014 blank to skip</label><input id="coTip" type="number" inputmode="decimal">';
+  }
+  if (co.soluble) {
+    h += '<label>Time part was placed into the ultrasonic tank</label><input id="coUltra" type="time">';
+  }
+  h += '<label style="display:flex; gap:10px; align-items:center; text-transform:none; font-size:14.5px; color:var(--text); margin-top:12px">' +
+    '<input type="checkbox" id="coSheetOut" style="width:20px; height:20px"> Build sheet thrown out (removes one from Used' + (j.sheet ? ': ' + esc(SHEET_LABELS[j.sheet] || j.sheet) : '') + ')</label>';
+  h += '<label>JAMS email \u2014 blank to skip</label><input id="coJams" placeholder="email for job tracking info" value="' + esc(localStorage.getItem('forgeJamsEmail') || '') + '">';
+  h += '<label class="tappable" onclick="document.getElementById(\'coPhoto\').click()">\ud83d\udcf7 Attach photo of finished print (optional)</label>';
+  h += '<input type="file" id="coPhoto" accept="image/*" capture="environment" style="display:none" onchange="setText(\'coPhotoName\', this.files[0] ? this.files[0].name : \'\')"><div class="l2" id="coPhotoName"></div>';
+  h += '<button class="btn-primary" onclick="submitCloseout(false)">Finish closeout</button>';
+  h += '<button class="btn-cancel" onclick="submitCloseout(true)">Skip closeout (flagged on the Sheet)</button>';
+  b.innerHTML = h;
+}
+function submitCloseout(skipped) {
+  var j = co.job;
+  var usage = skipped ? '' : val('coUsage');
+  if (!skipped && (usage === '' || isNaN(Number(usage)))) return alert('Enter material used (cu in), or use Skip.');
+  var finish = function () {
+    api('closeJob', { jobId: j.jobId, usage: usage, ultrasonicTime: (document.getElementById('coUltra') ? val('coUltra') : ''), skipped: skipped, name: opName(), note: '' })
+      .then(function (r) {
+        var jamsTo = skipped ? '' : val('coJams').trim();
+        var next = function () {
+          if (r.cost && !skipped) {
+            var c = r.cost;
+            alert('Estimated job cost: $' + c.total + '\n\u2022 Material: $' + (c.material === null ? 'n/a \u2014 ' + c.note : c.material) + '\n\u2022 Consumable wear: ' + (c.wear === null ? 'n/a' : '$' + c.wear + ' (' + c.wearNote + ')'));
+          }
+          hide('closeModal');
+          toast(skipped ? 'Closeout skipped \u2014 flagged' : 'Job closed');
+        };
+        if (jamsTo) {
+          var f = document.getElementById('coPhoto').files[0];
+          if (f) {
+            shrinkPhoto(f, function (b64) {
+              api('sendJobEmail', { jobId: j.jobId, to: jamsTo, photoBase64: b64, name: opName() }).then(next).catch(function (e) { alert('JAMS email failed: ' + e.message); next(); });
+            });
+          } else {
+            api('sendJobEmail', { jobId: j.jobId, to: jamsTo, name: opName() }).then(next).catch(function (e) { alert('JAMS email failed: ' + e.message); next(); });
+          }
+        } else next();
+      })
+      .catch(function (e) { alert(e.message); });
+  };
+  var tipVal = document.getElementById('coTip') ? val('coTip') : '';
+  var sheetOut = document.getElementById('coSheetOut').checked;
+  var chain = Promise.resolve();
+  if (!skipped && tipVal !== '' && j.tipHead) {
+    chain = chain.then(function () { return api('logTipReading', { tipId: j.tipHead, reading: Number(tipVal), name: opName(), note: 'closeout ' + j.jobId }); })
+      .then(function (r) { if (r.flagged) alert('\u26a0 Tip reading went backward vs ' + r.previous + ' \u2014 check which tip is installed.'); })
+      .catch(function (e) { alert('Tip reading failed: ' + e.message); });
+  }
+  if (!skipped && sheetOut && j.sheet && j.sheet.indexOf('(reusing') === -1) {
+    chain = chain.then(function () { return api('sheetAction', { type: j.sheet, act: 'discardUsed', qty: 1, name: opName(), note: 'closeout ' + j.jobId }); })
+      .catch(function (e) { alert('Sheet discard failed: ' + e.message); });
+  }
+  chain.then(finish);
+}
+function shrinkPhoto(file, cb) {
+  var img = new Image();
+  img.onload = function () {
+    var max = 1280, sc = Math.min(1, max / Math.max(img.width, img.height));
+    var cv = document.createElement('canvas');
+    cv.width = Math.round(img.width * sc); cv.height = Math.round(img.height * sc);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    cb(cv.toDataURL('image/jpeg', 0.8).split(',')[1]);
+  };
+  img.src = URL.createObjectURL(file);
 }
 
 // ============================================================ tiny utils
