@@ -204,15 +204,15 @@
   <!-- ============================== HUB ============================== -->
   <div class="card" id="hubCard">
     <div class="hub-primary">
-      <button class="btn-primary" style="margin:0" onclick="openScannerScreen()">Update Material</button>
+      <button class="btn-primary" style="margin:0" onclick="withName(openScannerScreen)">Update Material</button>
       <button class="btn-ghost" onclick="openInventory()">Active material inventory</button>
       <button class="btn-ghost" onclick="openMatInfo()">Material Info</button>
-      <button class="btn-primary" style="margin:0; background:var(--panel-2); color:var(--accent); border:1px solid var(--accent)" onclick="openPrint()">Start a Print (walk-through)</button>
+      <button class="btn-primary" style="margin:0; background:var(--panel-2); color:var(--accent); border:1px solid var(--accent)" onclick="withName(openPrint)">Start a Print (walk-through)</button>
     </div>
     <div class="hub-secondary">
-      <button class="btn-ghost" onclick="openConsumables()">Track consumables</button>
-      <button class="btn-ghost" onclick="openUpkeep('cal')">Calibrate Machine</button>
-      <button class="btn-ghost" onclick="openUpkeep('mnt')">Perform Maintenance</button>
+      <button class="btn-ghost" onclick="withName(openConsumables)">Track consumables</button>
+      <button class="btn-ghost" onclick="withName(function(){openUpkeep('cal')})">Calibrate Machine</button>
+      <button class="btn-ghost" onclick="withName(function(){openUpkeep('mnt')})">Perform Maintenance</button>
       <button class="btn-ghost" onclick="openHowTo('vid')">How-to videos/guides</button>
       <button class="btn-ghost" onclick="openStatus()">Printer Status</button>
       <button class="btn-ghost" onclick="openCloseout(null)">Post-Job Closeout</button>
@@ -436,7 +436,8 @@ var buffer = { sn: null, lot: null, pn: null };
 var current = null;            // { sn, lot, pn, cat, last, offline, manual }
 var scanner = null;
 var scanning = false;
-var lockedSN = null;           // SN just written — ignored until a DIFFERENT SN decodes
+var lockedSN = null;           // SN just written — ignored until a different box appears
+var lockedBox = null;          // all three codes of the completed box
 var cooldownUntil = 0;
 var overrideArmed = false;
 var torchOn = false;
@@ -543,7 +544,7 @@ function ensureInitials() {
   while (!v) {
     v = prompt('Your name (for process tracking):');
     if (v) v = v.trim().slice(0, 40);   // full name preserved, no case change (iteration 6)
-    if (v && !confirm('Save your name as "' + v + '"?\n\nThis is used on every entry you make and can\u2019t be edited later.')) v = '';
+    if (v && !confirm('Save your name as "' + v + '"?\n\nIt will be recorded on the entries you make, for process tracking.')) v = '';
     if (v) { try { localStorage.setItem(K.initials, v); } catch (e) {} }
     else v = null; // must have initials to operate
   }
@@ -618,7 +619,18 @@ function openScannerScreen() {
 function startScanner() {
   show('scanCard'); hide('canisterCard'); hide('unknownPnCard');
   resetBuffer();
-  if (scanning) return;
+  if (scanning || starting) return;
+  // wait out any in-flight stop() — constructing a second Html5Qrcode against the
+  // same element while the first is tearing down kills the camera until a reload
+  if (stopPromise) {
+    var p = stopPromise;
+    stopPromise = null;
+    p.then(function () { startScanner(); }).catch(function () { startScanner(); });
+    return;
+  }
+  starting = true;
+  var host = document.getElementById('reader');
+  if (host && host.querySelector('video')) host.innerHTML = '';   // clear any orphaned video
   scanner = new Html5Qrcode('reader', {
     formatsToSupport: [Html5QrcodeSupportedFormats.CODE_128],
     // native BarcodeDetector where the browser has it (Android Chrome):
@@ -644,9 +656,11 @@ function startScanner() {
     onDecode,
     function () {}
   ).then(function () {
+    starting = false;
     scanning = true; cameraGranted = true;
     setupTorch();
   }).catch(function (e) {
+    starting = false;
     scanning = false; scanner = null;
     hint('Camera blocked. In Safari: tap aA in the address bar → Website Settings → Camera → Allow, then retry. (' + e + ')');
     var b = document.getElementById('btnStartCam');
@@ -675,11 +689,14 @@ function toggleTorch() {
     .catch(function () { hint('Torch not supported on this camera.'); hide('btnTorch'); });
 }
 
+var starting = false;      // a start() is in flight
+var stopPromise = null;    // a stop()/clear() is in flight
 function stopScanner() {
   if (!scanning || !scanner) return Promise.resolve();
   scanning = false; torchOn = false;
-  return scanner.stop().then(function () { scanner.clear(); scanner = null; })
+  stopPromise = scanner.stop().then(function () { scanner.clear(); scanner = null; })
     .catch(function () { scanner = null; });
+  return stopPromise;
 }
 
 function onDecode(text) {
@@ -700,14 +717,17 @@ function onDecode(text) {
     return;
   }
 
-  // lockout: after a write, ignore everything until a DIFFERENT SN shows up.
+  // lockout: after a write, ignore the box just logged — but ANY code belonging to a
+  // different box releases it, so it no longer matters which barcode is seen first.
   if (lockedSN) {
-    if (kind === 'sn' && text !== lockedSN) {
-      lockedSN = null;
-      buffer = { sn: text, lot: null, pn: null };
-      paintChips();
-      tryFastPath(text);
-    }
+    var sameBox = (text === lockedSN) ||
+      (lockedBox && (text === lockedBox.lot || text === lockedBox.pn));
+    if (sameBox) return;
+    lockedSN = null; lockedBox = null;
+    buffer = { sn: null, lot: null, pn: null };
+    buffer[kind] = text;
+    paintChips();
+    if (kind === 'sn') tryFastPath(text);
     return;
   }
 
@@ -1054,7 +1074,7 @@ function undoLast() {
 }
 function finishUndo(msg) {
   lastWrite = null;
-  lockedSN = null;  // allow immediate rescan of the same canister
+  lockedSN = null; lockedBox = null;  // allow immediate rescan of the same canister
   hide('undoBar');
   setText('ovMain', msg); setText('ovSub', 'Rescan to log it correctly.');
   document.getElementById('ovMain').classList.remove('queued');
@@ -1180,6 +1200,7 @@ function renderInventoryPlatforms(body, platforms) {
 // ============================================================ auto-rearm + lockout
 function confirmAndRearm(main, sub, queued) {
   lockedSN = current.sn;
+  lockedBox = { sn: current.sn, lot: current.lot || null, pn: current.pn || null };
   cooldownUntil = Date.now() + 2500;
 
   setText('ovMain', main); setText('ovSub', sub);
@@ -1231,6 +1252,21 @@ function opName() {
   var v = (localStorage.getItem(K.initials) || '').trim();
   if (!v) { ensureInitials(); v = (localStorage.getItem(K.initials) || '').trim(); }
   return v;
+}
+/**
+ * Gate for features that change inventory or job data: the name is collected up
+ * front, before the operator can start anything, never mid-scan or mid-workflow.
+ * Returns false (and opens nothing) if they dismiss the prompt.
+ */
+function withName(fn) {
+  var v = (localStorage.getItem(K.initials) || '').trim();
+  if (!v) {
+    ensureInitials();
+    v = (localStorage.getItem(K.initials) || '').trim();
+    if (!v) return false;
+  }
+  fn();
+  return true;
 }
 
 // ---------- material info ----------
@@ -1298,20 +1334,27 @@ function renderMatInfoRow(r) {
               (o.inStock ? o.remaining + ' cu in in stock' : 'not in stock') + '</span>';
           }).join('<br>')
         : '<span class="warn">not set — fill in on the Sheet</span>') + '</div>';
-  h += '<div class="k">Tips / heads</div><div>';
-  if (r.assignedTips.length || r.assignedHeads.length)
-    h += 'Assigned: <span class="mono">' + esc(r.assignedTips.concat(r.assignedHeads).join(', ')) + '</span><br>';
-  h += r.compatibleTips ? 'Compatible tips: ' + esc(r.compatibleTips) + '<br>' : '';
-  h += r.compatibleHeads ? 'Compatible heads: ' + esc(r.compatibleHeads) : '';
-  if (!r.compatibleTips && !r.compatibleHeads && !r.assignedTips.length && !r.assignedHeads.length) h += '<span class="warn">not set</span>';
+  // strictly one consumable kind per platform: F900 = tips, F370 = heads
+  var isF900 = r.platform === 'F900';
+  h += '<div class="k">' + (isF900 ? 'Tips' : 'Heads') + '</div><div>';
+  var assigned = isF900 ? r.assignedTips : r.assignedHeads;
+  if (assigned && assigned.length) h += 'Assigned: <span class="mono">' + esc(assigned.join(', ')) + '</span><br>';
+  var compat = isF900 ? r.compatibleTips : r.compatibleHeads;
+  if (compat) h += 'Compatible: ' + esc(compat);
+  if (!compat && !(assigned && assigned.length)) h += '<span class="warn">not set</span>';
   h += '</div>';
+  // drying comes only from this material+platform's own reference data — never
+  // inferred, never borrowed from another platform or material
   var dry = r.dryingBySize || { text: '', note: '' };
-  var dryText = dry.text || (r.drying ? String(r.drying).replace(/\b\d+\s*(ci|size)\s*:?/gi, '').trim() : '');
-  h += '<div class="k">Drying</div><div>' + (dryText ? esc(dryText) : '<span class="warn">no profile \u2014 run a plain hold profile</span>') +
+  h += '<div class="k">Drying</div><div>' + (dry.text ? esc(dry.text) : 'Refer to user guide') +
     (dry.note ? '<div class="l2">' + esc(dry.note) + '</div>' : '') + '</div>';
-  if (r.tipLife && r.tipLife.length) {
+  if (isF900 && r.tipLife && r.tipLife.length) {
     h += '<div class="k">Tip life (max through tip, F900 guide)</div><div>' +
       r.tipLife.map(function (t) { return esc(t.tip) + ': ' + t.maxCuIn + ' ci'; }).join(' \u00b7 ') + '</div>';
+  }
+  if (!isF900 && r.headLife && r.headLife.length) {
+    h += '<div class="k">Head life (F123 guide)</div><div>' +
+      r.headLife.map(function (x) { return esc(x.head) + ': ' + x.hours + ' hrs'; }).join(' \u00b7 ') + '</div>';
   }
   h += '<div class="k">' + (r.platform === 'F370' ? 'Build tray' : 'Build sheet') + '</div><div>' + (r.buildSheet ? esc(r.buildSheet) : '<span class="warn">not set</span>') + '</div>';
   if (r.ovenTempC !== null) h += '<div class="k">Oven temp</div><div>' + r.ovenTempC + '°C</div>';
@@ -1797,7 +1840,7 @@ function renderStatus() {
   var h = '';
   stCache.forEach(function (s) {
     h += '<div class="mi-block"><div class="l1" style="display:flex; justify-content:space-between"><b>' + esc(s.machine) + '</b>' +
-      '<button class="btn-ghost" style="padding:6px 14px; font-size:12.5px" onclick="stEdit(\'' + esc(s.machine) + '\')">' +
+      '<button class="btn-ghost" style="padding:6px 14px; font-size:12.5px" onclick="withName(function(){stEdit(\'' + esc(s.machine) + '\')})">' +
       (stEditing === s.machine ? 'Cancel' : 'Update') + '</button></div>';
     if (stEditing === s.machine) {
       s.slots.forEach(function (sl) {
@@ -1866,8 +1909,8 @@ var pf = null;
 
 function openPrint() {
   pf = { stepIdx: 0, done: {}, machine: null, material: null, matRow: null, support: '', enough: null,
-    tipModel: '', tipSupport: '', head: '', sheetType: '', hours: '', modelUsage: '', supportUsage: '',
-    jobName: '', trackEmail: null, mi: null, con: null, status: null, upk: null };
+    tipModel: '', tipSupport: '', head: '', sheetType: '', hrs: '', min: '', hours: 0,
+    modelUsage: '', supportUsage: '', jobName: '', trackEmail: '', rememberEmail: false, mi: null, con: null, status: null, upk: null };
   show('printModal');
   document.getElementById('pfBody').textContent = 'Loading\u2026';
   Promise.all([api('getMaterialInfo'), api('getConsumables'), api('getPrinterStatus'), api('getUpkeep')])
@@ -1875,21 +1918,18 @@ function openPrint() {
     .catch(function (e) { document.getElementById('pfBody').textContent = 'Could not load: ' + e.message; });
 }
 function closePrint() { hide('printModal'); }
-// duration is entered/shown as HHH:MM; hours stay decimal in storage and math
-function parseHHMM(s) {
-  s = String(s || '').trim();
-  if (!s) return NaN;
-  var m = s.match(/^(\d{1,4})\s*:\s*([0-5]?\d)$/);
-  if (m) return Number(m[1]) + Number(m[2]) / 60;
-  if (/^\d{1,4}$/.test(s)) return Number(s);           // bare hours typed without a colon
-  return NaN;
+// duration is entered as separate hrs/min boxes; hours stay decimal in storage and math
+function durHours() {
+  var h = Number(val('pfHrs')), m = Number(val('pfMin'));
+  if (isNaN(h)) h = 0;
+  if (isNaN(m)) m = 0;
+  return h + m / 60;
 }
-function fmtHHMM(h) {
+function fmtDur(h) {
   h = Number(h);
   if (!(h >= 0)) return '';
   var t = Math.round(h * 60), hh = Math.floor(t / 60), mm = t % 60;
-  var hs = String(hh); while (hs.length < 3) hs = '0' + hs;
-  return hs + ':' + (mm < 10 ? '0' + mm : String(mm));
+  return hh + ' hr' + (mm ? ' ' + mm + ' min' : '');
 }
 function normEq(a, b) { return String(a || '').toLowerCase().trim() === String(b || '').toLowerCase().trim(); }
 function pfPlatform() { return pf.machine === 'F900' ? 'F900' : 'F370'; }
@@ -2149,15 +2189,20 @@ function pfStepHtml(id) {
       return '<div class="pf-note">Job tracking records <b>time, material usage, and cost</b> for this print. ' +
         'The optional email is formatted so it can be copied into JAMS manually.</div>' +
         '<label>Job name</label><input id="pfJobName" value="' + esc(pf.jobName) + '" placeholder="e.g. Duct adapter v3" oninput="pfCostRefresh()">' +
-        '<label>Expected print duration (HHH:MM)</label><input id="pfHours" inputmode="numeric" placeholder="008:00" value="' + esc(pf.hours) + '" oninput="pfCostRefresh()">' +
+        '<label>Expected print duration</label>' +
+        '<div style="display:flex; gap:8px; align-items:center; max-width:230px">' +
+        '<input id="pfHrs" type="number" inputmode="numeric" min="0" placeholder="0" value="' + esc(pf.hrs) + '" oninput="pfCostRefresh()" style="margin:0; text-align:center">' +
+        '<span class="l2" style="flex:0 0 auto">hrs</span>' +
+        '<input id="pfMin" type="number" inputmode="numeric" min="0" max="59" placeholder="00" value="' + esc(pf.min) + '" oninput="pfCostRefresh()" style="margin:0; text-align:center">' +
+        '<span class="l2" style="flex:0 0 auto">min</span></div>' +
         '<label>Model material expected (cu in)</label><input id="pfMU" type="number" inputmode="decimal" value="' + esc(pf.modelUsage) + '" oninput="pfCostRefresh()">' +
         '<label>Support material used (cu in)</label><input id="pfSU" type="number" inputmode="decimal" value="' + esc(pf.supportUsage) + '" placeholder="enter 0 if none" oninput="pfCostRefresh()">' +
         '<div id="pfCost" class="mi-block" style="margin-top:12px"><div class="k">Estimated job cost</div><div id="pfCostBody" class="l2">Fill in duration and material used\u2026</div></div>' +
-        '<label style="margin-top:12px">Job tracking email?</label>' +
-        '<div class="btn-grid">' +
-        '<button class="btn-primary" style="margin:0" onclick="pfTrackEmail(\'' + esc(saved) + '\')">Yes \u2014 email the job info</button>' +
-        '<button class="btn-ghost" onclick="pfSaveTrack(null)">No thanks</button></div>' +
-        (saved ? '<div class="l2">Saved address: ' + esc(saved) + '</div>' : '');
+        '<label style="margin-top:12px">Job tracking email \u2014 leave blank to skip</label>' +
+        '<input id="pfTrackEmail" inputmode="email" placeholder="you@example.com" value="' + esc(pf.trackEmail || saved) + '" oninput="pfReadTrackInputs()">' +
+        '<label style="display:flex; gap:10px; align-items:center; text-transform:none; font-size:14px; color:var(--text); margin-top:8px">' +
+        '<input type="checkbox" id="pfRemember" style="width:19px; height:19px"' + (pf.rememberEmail || saved ? ' checked' : '') + '> Remember this address on this device</label>' +
+        '<button class="btn-primary" onclick="pfSaveTrack()">Continue</button>';
     }
     case 'confirm': {
       var em = pf.trackEmail || localStorage.getItem('forgeJamsEmail') || '';
@@ -2165,7 +2210,7 @@ function pfStepHtml(id) {
         '<div><b>' + esc(pf.jobName || '(unnamed job)') + '</b></div>' +
         '<div>' + esc(pf.machine) + ' \u00b7 ' + esc(pf.material) + (pf.support ? ' + ' + esc(pf.support) : '') + '</div>' +
         '<div class="l2">' + [pf.tipModel && 'model tip ' + pf.tipModel, pf.tipSupport && 'support tip ' + pf.tipSupport,
-          pf.head && 'head ' + pf.head, pf.sheetType && (SHEET_LABELS[pf.sheetType] || pf.sheetType), fmtHHMM(parseHHMM(pf.hours))]
+          pf.head && 'head ' + pf.head, pf.sheetType && (SHEET_LABELS[pf.sheetType] || pf.sheetType), fmtDur(pf.hours)]
           .filter(Boolean).join(' \u00b7 ') + '</div>' +
         (pf.trackEmail ? '<div class="l2">Job tracking email \u2192 ' + esc(pf.trackEmail) + '</div>' : '') + '</div>' +
         '<label style="display:flex; gap:10px; align-items:center; text-transform:none; font-size:14.5px; color:var(--text)">' +
@@ -2213,8 +2258,14 @@ function pfLogCal() {
     .catch(function (e) { alert(e.message); });
 }
 function pfReadTrackInputs() {
-  pf.jobName = val('pfJobName'); pf.hours = val('pfHours');
-  pf.modelUsage = val('pfMU'); pf.supportUsage = val('pfSU');
+  // every field is mirrored into pf state on each keystroke, so a validation
+  // re-prompt can never blank out something already entered
+  if (document.getElementById('pfJobName')) pf.jobName = val('pfJobName');
+  if (document.getElementById('pfHrs')) { pf.hrs = val('pfHrs'); pf.min = val('pfMin'); pf.hours = durHours(); }
+  if (document.getElementById('pfMU')) pf.modelUsage = val('pfMU');
+  if (document.getElementById('pfSU')) pf.supportUsage = val('pfSU');
+  if (document.getElementById('pfTrackEmail')) pf.trackEmail = val('pfTrackEmail').trim();
+  if (document.getElementById('pfRemember')) pf.rememberEmail = document.getElementById('pfRemember').checked;
 }
 
 // live cost estimate on the Job Tracking screen — debounced, read-only on the server
@@ -2223,7 +2274,7 @@ function pfCostRefresh() {
   pfReadTrackInputs();
   var body = document.getElementById('pfCostBody');
   if (!body) return;
-  var hrs = parseHHMM(pf.hours);
+  var hrs = pf.hours;
   if (!(Number(pf.modelUsage) >= 0)) { body.textContent = 'Enter model material used for an estimate.'; return; }
   body.textContent = 'Calculating\u2026';
   clearTimeout(pfCostTimer);
@@ -2249,23 +2300,13 @@ function pfCostRefresh() {
     });
   }, 600);
 }
-function pfTrackEmail(saved) {
-  pfReadTrackInputs();
-  var email = prompt('Email address for the job tracking info:', saved || '');
-  if (!email) return;
-  if (!saved || email.trim() !== saved) {
-    if (confirm('Remember this address on this device for future prints?\n(OK = save, Cancel = type it fresh each time)')) {
-      localStorage.setItem('forgeJamsEmail', email.trim());
-    }
-  }
-  pfSaveTrack(email.trim());
-}
-function pfSaveTrack(email) {
-  pfReadTrackInputs();
-  if (!(parseHHMM(pf.hours) > 0)) return alert('Enter the expected print duration as HHH:MM (e.g. 008:00).');
-  if (pf.supportUsage === '' || isNaN(Number(pf.supportUsage))) return alert('Enter support material used \u2014 put 0 if none was used.');
+function pfSaveTrack() {
+  pfReadTrackInputs();   // state is captured BEFORE any validation bail-out
+  if (!(pf.hours > 0)) return alert('Enter the expected print duration (hours and/or minutes).');
   if (pf.modelUsage === '' || isNaN(Number(pf.modelUsage))) return alert('Enter the model material expected.');
-  pf.trackEmail = email;
+  if (pf.supportUsage === '' || isNaN(Number(pf.supportUsage))) return alert('Enter support material used \u2014 put 0 if none was used.');
+  if (pf.rememberEmail && pf.trackEmail) localStorage.setItem('forgeJamsEmail', pf.trackEmail);
+  if (!pf.rememberEmail) { try { localStorage.removeItem('forgeJamsEmail'); } catch (e) {} }
   pfDone();
 }
 var pfStarting = false;
@@ -2280,7 +2321,7 @@ function pfStart(btn) {
   api('startJob', {
     machine: pf.machine, material: pf.material, supportMaterial: pf.support,
     tipHead: pfPlatform() === 'F900' ? (pf.tipModel || pfSlot('TipModel').value) : (pf.head || pfSlot('Head').value),
-    sheetType: pf.sheetType, expectedHours: parseHHMM(pf.hours),
+    sheetType: pf.sheetType, expectedHours: pf.hours,
     jobName: pf.jobName, modelUsage: pf.modelUsage, supportUsage: pf.supportUsage, soluble: pfSoluble(),
     notifyEmail: notify ? email : '', trackEmail: pf.trackEmail || '', name: opName(), note: ''
   }).then(function (r) {
@@ -2354,7 +2395,7 @@ function renderCloseout() {
   var j = co.job;
   var b = document.getElementById('closeBody');
   var h = '<div class="mi-block"><b style="font-size:16.5px">' + esc(j.jobName || j.material) + '</b>' +
-    '<div class="l2">' + esc(j.machine) + ' \u00b7 ' + esc(j.material) + ' \u00b7 started ' + esc(j.at) + ' by ' + esc(j.by) + ' \u00b7 expected ' + fmtHHMM(j.expectedHours) + '</div></div>';
+    '<div class="l2">' + esc(j.machine) + ' \u00b7 ' + esc(j.material) + ' \u00b7 started ' + esc(j.at) + ' by ' + esc(j.by) + ' \u00b7 expected ' + fmtDur(j.expectedHours) + '</div></div>';
   // usage comes forward from the Job Tracking step — never re-asked here (iteration 6)
   h += '<div class="pf-note">Material used: <b>' + (j.modelUsage === null ? '\u2014' : j.modelUsage + ' ci model') +
     (j.supportUsage === null ? '' : ' \u00b7 ' + j.supportUsage + ' ci support') + '</b> <span class="l2">(from job start)</span></div>';
