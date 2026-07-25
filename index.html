@@ -180,13 +180,15 @@
   .pf-chip.done { border-color: var(--ok); color: var(--ok); }
   .vlink { display: inline-block; margin-left: 8px; font-size: 12px; color: var(--accent); text-decoration: underline; }
   .pf-note { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; font-size: 13px; color: var(--dim); margin-top: 8px; }
+  button.locked { opacity: .55; pointer-events: none; }
+  button.done-flash { background: var(--ok) !important; border-color: var(--ok) !important; color: #04140a !important; opacity: 1 !important; }
 </style>
 </head>
 <body>
 <div class="wrap" id="wrap">
 
   <header>
-    <h1 id="appTitle" onclick="changeExecUrl()">Forge Stratasys Tracker</h1>
+    <h1 id="appTitle">Forge Stratasys Tracker</h1>
     <div class="hdr-right">
       <div class="pill q hidden" id="queuePill" onclick="flushQueue()">0 queued</div>
       <div class="counter" id="counter" onclick="toggleSession(true)">0</div>
@@ -226,15 +228,15 @@
       <div class="chip" id="chipPN">P/N</div>
     </div>
     <div class="scan-tools">
-      <button class="btn-ghost hidden" id="btnTorch" onclick="toggleTorch()">Torch on</button>
+      <button class="btn-ghost hidden" id="btnTorch" onclick="toggleTorch()">Flash</button>
       <button class="btn-ghost" onclick="resetBuffer()">Reset codes</button>
     </div>
-    <div class="scanhint" id="scanHint">Scan the SN barcode — known canisters need nothing else.</div>
+    <div class="scanhint" id="scanHint">Materials in inventory just need SN</div>
     <div class="unknown hidden" id="unknownBox">
       <b>Unrecognized barcode</b> — doesn't match SN / Lot / P/N patterns:
       <code id="unknownVal"></code>
     </div>
-    <button class="manual-link" onclick="toggleManual()">Label damaged? Enter SN manually</button>
+    <button class="manual-link" onclick="toggleManual()">Enter SN manually</button>
     <button class="btn-cancel" onclick="goHome()">Done — back to menu</button>
     <div id="manualBox" class="hidden">
       <label>Serial number (9 digits)</label>
@@ -346,7 +348,7 @@
 <div id="matModal" class="modal hidden">
   <header style="display:flex; justify-content:space-between; align-items:center">
     <h1>Material info</h1>
-    <button class="btn-ghost" style="padding:8px 16px" onclick="hide('matModal')">Close</button>
+    <button class="btn-ghost" style="padding:8px 16px" onclick="hide('matModal')" data-nolock>Close</button>
   </header>
   <div class="seg"><button id="miSegF900" class="on" onclick="miPlat('F900')">F900</button>
   <button id="miSegF370" onclick="miPlat('F370')">F370</button></div>
@@ -363,7 +365,7 @@
     <button class="btn-ghost" style="padding:8px 16px" onclick="hide('conModal')">Close</button>
   </header>
   <div class="seg">
-    <button id="segF900" class="on" onclick="conTab('F900')">F900</button>
+    <button id="segF900" onclick="conTab('F900')">F900</button>
     <button id="segF370" onclick="conTab('F370')">F370</button>
   </div>
   <div id="conBody"></div>
@@ -395,7 +397,7 @@
 <div id="statusModal" class="modal hidden">
   <header style="display:flex; justify-content:space-between; align-items:center">
     <h1>Printer status</h1>
-    <button class="btn-ghost" style="padding:8px 16px" onclick="hide('statusModal')">Close</button>
+    <button class="btn-ghost" style="padding:8px 16px" onclick="hide('statusModal')" data-nolock>Close</button>
   </header>
   <div id="statusBody"></div>
 </div>
@@ -404,7 +406,7 @@
 <div id="printModal" class="modal hidden">
   <header style="display:flex; justify-content:space-between; align-items:center">
     <h1>Start a print</h1>
-    <button class="btn-ghost" style="padding:8px 16px" onclick="closePrint()">Close</button>
+    <button class="btn-ghost" style="padding:8px 16px" onclick="closePrint()" data-nolock>Close</button>
   </header>
   <div id="pfChips" class="pf-chips"></div>
   <div id="pfBody"></div>
@@ -414,7 +416,7 @@
 <div id="closeModal" class="modal hidden">
   <header style="display:flex; justify-content:space-between; align-items:center">
     <h1>Post-job closeout</h1>
-    <button class="btn-ghost" style="padding:8px 16px" onclick="hide('closeModal')">Close</button>
+    <button class="btn-ghost" style="padding:8px 16px" onclick="hide('closeModal')" data-nolock>Close</button>
   </header>
   <div id="closeBody"></div>
 </div>
@@ -444,19 +446,25 @@ var flushing = false;
 var fastPathSN = null;         // SN currently being looked up by the quick re-scan path
 
 // ============================================================ API (fetch to /exec)
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │  DEPLOYMENT URL — the only line to edit when the Apps Script URL changes. │
+// │  Paste the full /exec URL between the quotes. Nothing else references it. │
+// └──────────────────────────────────────────────────────────────────────────┘
+var EXEC_URL = 'https://script.google.com/macros/s/AKfycbwvr_jwbGAx7PY1oUrcdQiAl8LxkAjn97fF3bu8dkuzjeIO04uV_8hOC-ejt3IjmDjM9w/exec';
+
 function execUrl() {
+  if (EXEC_URL && EXEC_URL.indexOf('PASTE_YOUR') === -1) return EXEC_URL;
+  // fallback only if the constant above was never filled in — keeps the app usable
   var u = null;
   try { u = localStorage.getItem(K.url); } catch (e) {}
   if (!u) {
-    u = prompt('One-time setup — paste the Apps Script /exec URL:');
+    u = prompt('Setup incomplete — paste the Apps Script /exec URL:');
     if (u) { u = u.trim(); try { localStorage.setItem(K.url, u); } catch (e) {} }
   }
   return u;
 }
-function changeExecUrl() {
-  var u = prompt('Apps Script /exec URL:', (localStorage.getItem(K.url) || ''));
-  if (u) { localStorage.setItem(K.url, u.trim()); location.reload(); }
-}
+// The deployment URL is compiled into EXEC_URL above; there is no in-app way to
+// change it by design. Update the constant and redeploy the page if it ever moves.
 function api(action, params, timeoutMs) {
   var url = execUrl();
   if (!url) return Promise.reject(new Error('No /exec URL configured. Tap the title to set it.'));
@@ -473,10 +481,35 @@ function api(action, params, timeoutMs) {
 }
 function isNetworkError(e) { return !e.appError; }  // app errors came back as JSON; the rest is connectivity
 
+// ============================================================ double-tap protection
+// One capture-phase listener covers every button in the app: the first tap disables
+// the control, and it stays disabled until the work that tap started settles.
+// Buttons marked data-nolock (pure navigation/close) are exempt.
+var LOCK_MS = 2500;
+function lockButton(btn, ms) {
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.classList.add('locked');
+  clearTimeout(btn._unlock);
+  btn._unlock = setTimeout(function () { unlockButton(btn); }, ms || LOCK_MS);
+}
+function unlockButton(btn) {
+  if (!btn) return;
+  clearTimeout(btn._unlock);
+  btn.disabled = false;
+  btn.classList.remove('locked');
+}
+document.addEventListener('click', function (e) {
+  var btn = e.target && e.target.closest ? e.target.closest('button') : null;
+  if (!btn) return;
+  if (btn.disabled) { e.preventDefault(); e.stopPropagation(); return; }
+  if (btn.hasAttribute('data-nolock')) return;
+  lockButton(btn);
+}, true);
+
 // ============================================================ boot
 window.addEventListener('load', function () {
   document.getElementById('fDate').value = todayStr();
-  execUrl();          // prompt on first run
   // Name is requested lazily, only when a data-changing action begins (iteration 5)
 
   // catalog: cached copy first (works offline), refresh in background
@@ -509,7 +542,8 @@ function ensureInitials() {
   try { v = localStorage.getItem(K.initials); } catch (e) {}
   while (!v) {
     v = prompt('Your name (for process tracking):');
-    if (v) v = v.trim().toUpperCase().slice(0, 4);
+    if (v) v = v.trim().slice(0, 40);   // full name preserved, no case change (iteration 6)
+    if (v && !confirm('Save your name as "' + v + '"?\n\nThis is used on every entry you make and can\u2019t be edited later.')) v = '';
     if (v) { try { localStorage.setItem(K.initials, v); } catch (e) {} }
     else v = null; // must have initials to operate
   }
@@ -624,7 +658,7 @@ function startScanner() {
 function setupTorch() {
   torchOn = false;
   var btn = document.getElementById('btnTorch');
-  btn.textContent = 'Torch on';
+  btn.textContent = 'Flash';
   try {
     var caps = scanner.getRunningTrackCapabilities();
     if (caps && caps.torch) show('btnTorch'); else hide('btnTorch');
@@ -636,7 +670,7 @@ function toggleTorch() {
   scanner.applyVideoConstraints({ advanced: [{ torch: want }] })
     .then(function () {
       torchOn = want;
-      document.getElementById('btnTorch').textContent = torchOn ? 'Torch off' : 'Torch on';
+      document.getElementById('btnTorch').textContent = torchOn ? 'Flash off' : 'Flash';
     })
     .catch(function () { hint('Torch not supported on this camera.'); hide('btnTorch'); });
 }
@@ -740,7 +774,7 @@ function resetBuffer() {
   fastPathSN = null;
   paintChips();
   hide('unknownBox');
-  hint('Scan the SN barcode — known canisters need nothing else.');
+  hint('Materials in inventory just need SN');
 }
 function hint(msg) { document.getElementById('scanHint').textContent = msg; }
 
@@ -1222,14 +1256,23 @@ function miPlat(plat) {
   sel.innerHTML = primary.length
     ? primary.map(function (r) { return '<option value="' + esc(r.material) + '||' + esc(r.platform) + '">' + esc(r.material) + '</option>'; }).join('')
     : '<option value="">— no ' + plat + ' model materials in inventory —</option>';
+  miPaintNotStocked(notStocked);
+  renderMatInfo();
+}
+var miShowAll = false;
+function miToggleAll() { miShowAll = !miShowAll; miPlat(miPlatCur); }
+function miPaintNotStocked(notStocked) {
   var ns = document.getElementById('miNotStocked');
-  ns.innerHTML = notStocked.length
-    ? '<div style="font-size:11.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px">Not currently stocked</div>' +
+  if (!notStocked.length) { ns.innerHTML = ''; return; }
+  var h = '<button class="btn-ghost" style="width:100%; padding:9px; font-size:13px" onclick="miToggleAll()">' +
+    (miShowAll ? 'Hide reference materials' : 'Show all Stratasys model materials') + '</button>';
+  if (miShowAll) {
+    h += '<div style="font-size:11.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin-top:10px">Not currently stocked</div>' +
       '<div style="font-size:12.5px; color:var(--dim); line-height:1.9">' + notStocked.map(function (r) {
         return '<span class="tappable" style="text-decoration:underline" onclick="miShow(\'' + esc(r.material).replace(/'/g, "\\'") + '\')">' + esc(r.material) + '</span>';
-      }).join(' \u00b7 ') + '</div>'
-    : '';
-  renderMatInfo();
+      }).join(' \u00b7 ') + '</div>';
+  }
+  ns.innerHTML = h;
 }
 function miShow(material) {
   // reference-only view for a not-stocked material
@@ -1262,7 +1305,10 @@ function renderMatInfoRow(r) {
   h += r.compatibleHeads ? 'Compatible heads: ' + esc(r.compatibleHeads) : '';
   if (!r.compatibleTips && !r.compatibleHeads && !r.assignedTips.length && !r.assignedHeads.length) h += '<span class="warn">not set</span>';
   h += '</div>';
-  h += '<div class="k">Drying \u2014 GID (Get it Dry) / KID (Keep it Dry)</div><div>' + (r.drying ? esc(r.drying) : '<span class="warn">not set</span>') + '</div>';
+  var dry = r.dryingBySize || { text: '', note: '' };
+  var dryText = dry.text || (r.drying ? String(r.drying).replace(/\b\d+\s*(ci|size)\s*:?/gi, '').trim() : '');
+  h += '<div class="k">Drying</div><div>' + (dryText ? esc(dryText) : '<span class="warn">no profile \u2014 run a plain hold profile</span>') +
+    (dry.note ? '<div class="l2">' + esc(dry.note) + '</div>' : '') + '</div>';
   if (r.tipLife && r.tipLife.length) {
     h += '<div class="k">Tip life (max through tip, F900 guide)</div><div>' +
       r.tipLife.map(function (t) { return esc(t.tip) + ': ' + t.maxCuIn + ' ci'; }).join(' \u00b7 ') + '</div>';
@@ -1275,8 +1321,9 @@ function renderMatInfoRow(r) {
 }
 
 // ---------- consumables ----------
-var conCache = null, conCur = 'tips';
+var conCache = null, conCur = null;
 function openConsumables() {
+  conCur = null;   // no platform preselected — operator must choose (iteration 6)
   show('conModal');
   document.getElementById('conBody').textContent = 'Loading…';
   api('getConsumables').then(function (d) { conCache = d; conTab(conCur); })
@@ -1306,6 +1353,10 @@ function conTab(which) {
   document.getElementById('segF900').classList.toggle('on', which === 'F900');
   document.getElementById('segF370').classList.toggle('on', which === 'F370');
   var b = document.getElementById('conBody');
+  if (!which) {
+    b.innerHTML = '<div class="mi-block" style="text-align:center">Choose <b>F900</b> or <b>F370</b> above to view its consumables.</div>';
+    return;
+  }
   if (!conCache) { b.textContent = 'Loading\u2026'; return; }
   var wrap = document.createElement('div');
   if (which === 'F900') {
@@ -1359,6 +1410,7 @@ function renderTips(b) {
       '<div class="l2">' + (t.assignedMaterial ? esc(t.assignedMaterial) : 'unassigned') +
       (t.lastReading !== null ? ' \u00b7 last odo ' + t.lastReading + ' (' + esc(t.lastReadingAt) + ')' : '') + '</div>' +
       '<div class="btn-grid" style="margin-top:6px"><button class="btn-ghost" style="padding:8px" onclick="tipReadingPrompt(\'' + t.tipId + '\')">Log reading</button>' +
+      '<button class="btn-ghost" style="padding:8px" onclick="tipOdoPrompt(\'' + t.tipId + '\',' + (t.usage === null ? 0 : t.usage) + ')">Set total ci</button>' +
       '<button class="btn-danger" style="padding:8px" onclick="tipRetirePrompt(\'' + t.tipId + '\')">Retire</button></div></div>';
   });
   if (!conCache.tips.length) h += '<div class="lrow">No serialized tips yet \u2014 \u201cUse new tip\u201d creates them.</div>';
@@ -1395,15 +1447,21 @@ function tipRetirePrompt(tipId) {
     .catch(function (e) { alert(e.message); });
 }
 
+var conRegOpen = false;
+function conRegToggle() { conRegOpen = !conRegOpen; conTab(conCur); }
 function renderHeads(b) {
-  // manual registration: type + serial + material (no barcode step)
-  var h = '<div class="mi-block"><div class="k">Register a head</div>' +
-    '<select id="rhType" onchange="rhTypeChange()"><option value="STANDARD">Standard head</option><option value="ABS-CF10">ABS-CF10 head</option></select>' +
-    '<input id="rhSerial" placeholder="Serial number on the head" style="margin-top:8px">' +
-    '<label>Material it\u2019s assigned to</label>' +
-    '<select id="rhMaterial">' + invMaterialOptions('F370') + '</select>' +
-    '<div class="l2 hidden" id="rhCf10Note">ABS-CF10 heads are always paired with ABS-CF10 material.</div>' +
-    '<button class="btn-primary" style="margin-top:10px" onclick="headRegister()">Register head</button></div>';
+  // manual registration, collapsed by default (iteration 6)
+  var h = '<div class="mi-block"><div class="k tappable" onclick="conRegToggle()">' +
+    (conRegOpen ? '\u25be ' : '\u25b8 ') + 'Register a head</div>';
+  if (conRegOpen) {
+    h += '<select id="rhType" onchange="rhTypeChange()"><option value="STANDARD">Standard head</option><option value="ABS-CF10">ABS-CF10 head</option></select>' +
+      '<input id="rhSerial" placeholder="Serial number on the head" style="margin-top:8px">' +
+      '<label>Material it\u2019s assigned to</label>' +
+      '<select id="rhMaterial">' + invMaterialOptions('F370') + '</select>' +
+      '<div class="l2 hidden" id="rhCf10Note">ABS-CF10 heads are always paired with ABS-CF10 material.</div>' +
+      '<button class="btn-primary" style="margin-top:10px" onclick="headRegister()">Register head</button>';
+  }
+  h += '</div>';
 
   h += '<div class="k" style="margin-top:14px; text-transform:uppercase; font-size:11px; color:var(--dim)">Heads</div>';
   conCache.heads.forEach(function (hd) {
@@ -1412,7 +1470,8 @@ function renderHeads(b) {
       '<span' + warn + '>' + hd.hoursUsed + '/' + hd.lifeHours + ' hrs</span></div>' +
       '<div class="l2">' + esc(hd.headType === 'ABS-CF10' ? 'ABS-CF10 head' : 'Standard head') + ' \u00b7 ' +
       (hd.assignedMaterial ? esc(hd.assignedMaterial) : 'unassigned') + (hd.machine ? ' \u00b7 ' + esc(hd.machine) : '') + '</div>' +
-      '<div class="btn-grid" style="margin-top:6px"><button class="btn-ghost" style="padding:8px" onclick="headAssignPrompt(\'' + esc(hd.serial) + '\')">Reassign</button>' +
+      '<div class="btn-grid" style="margin-top:6px"><button class="btn-ghost" style="padding:8px" onclick="headHoursPrompt(\'' + esc(hd.serial) + '\',' + hd.hoursUsed + ')">Set hours</button>' +
+      '<button class="btn-ghost" style="padding:8px" onclick="headAssignPrompt(\'' + esc(hd.serial) + '\')">Reassign</button>' +
       '<button class="btn-danger" style="padding:8px" onclick="headRetirePrompt(\'' + esc(hd.serial) + '\')">Retire</button></div></div>';
   });
   if (!conCache.heads.length) h += '<div class="lrow">No heads registered yet.</div>';
@@ -1437,6 +1496,28 @@ function headAssignPrompt(serial) {
     .then(function (r) { toast('Reassigned ' + serial); refreshCon(); })
     .catch(function (e) { alert(e.message); });
 }
+// manual odometer overrides — reachable from Consumables and from Printer Status
+function headHoursPrompt(serial, current) {
+  var v = prompt('Set total hours on head ' + serial + ' (absolute running total, not an addition):', current);
+  if (v === null) return;
+  if (!(Number(v) >= 0)) return alert('Enter hours as a number, e.g. 320.');
+  var note = prompt('Note (optional) — why is this being set?') || '';
+  api('setHeadHours', { serial: serial, hours: Number(v), name: opName(), note: note })
+    .then(function (r) { toast(serial + ': ' + r.hoursUsed + '/' + r.lifeHours + ' hrs'); refreshConIfOpen(); if (stCache) openStatus(); })
+    .catch(function (e) { alert(e.message); });
+}
+function tipOdoPrompt(tipId, current) {
+  var v = prompt('Set cumulative cu in run through ' + tipId + ' (absolute total, not an addition):', current);
+  if (v === null) return;
+  if (!(Number(v) >= 0)) return alert('Enter cubic inches as a number, e.g. 640.');
+  var note = prompt('Note (optional) — why is this being set?') || '';
+  api('setTipOdometer', { tipId: tipId, cuIn: Number(v), name: opName(), note: note })
+    .then(function (r) { toast(tipId + ': ' + r.usage + ' ci total'); refreshConIfOpen(); if (stCache) openStatus(); })
+    .catch(function (e) { alert(e.message); });
+}
+function refreshConIfOpen() {
+  if (!document.getElementById('conModal').classList.contains('hidden')) refreshCon();
+}
 function headRetirePrompt(serial) {
   var note = prompt('Retire head ' + serial + ' \u2014 reason (required):');
   if (note === null) return;
@@ -1446,7 +1527,8 @@ function headRetirePrompt(serial) {
 }
 
 function renderSheetGroup(b, platform, title) {
-  var h = '<div class="k" style="margin-top:14px; text-transform:uppercase; font-size:11px; color:var(--dim)">' + esc(title) + '</div>';
+  var h = '<div class="k" style="margin-top:14px; text-transform:uppercase; font-size:11px; color:var(--dim)">' +
+    esc(title) + ' <span style="opacity:.6">\u00b7 tap to expand</span></div>';
   SHEET_TYPE_META[platform].forEach(function (g) {
     var key = platform + '|' + g.type;
     var open = !!conOpen[key];
@@ -1723,6 +1805,30 @@ function renderStatus() {
           '<select id="st_' + esc(s.machine).replace(/\s/g, '_') + '_' + sl.slot + '">' +
           stOptions(stChoicesFor(s.machine, sl.slot), sl.value, true) + '</select>';
       });
+      // same odometer overrides as the Consumables tab, exposed here too (iteration 6)
+      if (s.machine !== 'FDC') {
+        var odo = '';
+        if (s.machine === 'F900') {
+          ['TipModel', 'TipSupport'].forEach(function (slot) {
+            var cur = '';
+            s.slots.forEach(function (sl) { if (sl.slot === slot) cur = sl.value; });
+            if (cur) {
+              var t = null;
+              (stCon.tips || []).forEach(function (x) { if (x.tipId === cur) t = x; });
+              odo += '<button class="btn-ghost" style="padding:8px" onclick="tipOdoPrompt(\'' + esc(cur) + '\',' + (t && t.usage !== null ? t.usage : 0) + ')">Set ' + esc(cur) + ' total ci</button>';
+            }
+          });
+        } else {
+          var curH = '';
+          s.slots.forEach(function (sl) { if (sl.slot === 'Head') curH = sl.value; });
+          if (curH) {
+            var hd = null;
+            (stCon.heads || []).forEach(function (x) { if (x.serial === curH) hd = x; });
+            odo += '<button class="btn-ghost" style="padding:8px" onclick="headHoursPrompt(\'' + esc(curH) + '\',' + (hd ? hd.hoursUsed : 0) + ')">Set ' + esc(curH) + ' hours</button>';
+          }
+        }
+        if (odo) h += '<div class="btn-grid" style="margin-top:10px">' + odo + '</div>';
+      }
       h += '<button class="btn-primary" onclick="stSave(\'' + esc(s.machine) + '\')">Save ' + esc(s.machine) + '</button>';
     } else {
       s.slots.forEach(function (sl) {
@@ -1761,7 +1867,7 @@ var pf = null;
 function openPrint() {
   pf = { stepIdx: 0, done: {}, machine: null, material: null, matRow: null, support: '', enough: null,
     tipModel: '', tipSupport: '', head: '', sheetType: '', hours: '', modelUsage: '', supportUsage: '',
-    xDim: '', yDim: '', jobName: '', trackEmail: null, mi: null, con: null, status: null, upk: null };
+    jobName: '', trackEmail: null, mi: null, con: null, status: null, upk: null };
   show('printModal');
   document.getElementById('pfBody').textContent = 'Loading\u2026';
   Promise.all([api('getMaterialInfo'), api('getConsumables'), api('getPrinterStatus'), api('getUpkeep')])
@@ -1769,6 +1875,23 @@ function openPrint() {
     .catch(function (e) { document.getElementById('pfBody').textContent = 'Could not load: ' + e.message; });
 }
 function closePrint() { hide('printModal'); }
+// duration is entered/shown as HHH:MM; hours stay decimal in storage and math
+function parseHHMM(s) {
+  s = String(s || '').trim();
+  if (!s) return NaN;
+  var m = s.match(/^(\d{1,4})\s*:\s*([0-5]?\d)$/);
+  if (m) return Number(m[1]) + Number(m[2]) / 60;
+  if (/^\d{1,4}$/.test(s)) return Number(s);           // bare hours typed without a colon
+  return NaN;
+}
+function fmtHHMM(h) {
+  h = Number(h);
+  if (!(h >= 0)) return '';
+  var t = Math.round(h * 60), hh = Math.floor(t / 60), mm = t % 60;
+  var hs = String(hh); while (hs.length < 3) hs = '0' + hs;
+  return hs + ':' + (mm < 10 ? '0' + mm : String(mm));
+}
+function normEq(a, b) { return String(a || '').toLowerCase().trim() === String(b || '').toLowerCase().trim(); }
 function pfPlatform() { return pf.machine === 'F900' ? 'F900' : 'F370'; }
 function pfSlot(slot) {
   var out = { value: '', at: '', by: '' };
@@ -1826,8 +1949,12 @@ function pfSteps() {
       steps.push({ id: 'change', t: 'Change material' });
       steps.push({ id: 'cal', t: 'Calibrate' });
     }
-    steps.push({ id: 'qty', t: 'Enough material?' });
-    if (pf.enough === false) steps.push({ id: 'loadmat', t: 'Load material' });
+    // only ask "enough?" when continuing on the already-loaded material — a material
+    // change loads a fresh canister, so the question doesn't apply (iteration 6)
+    if (!pfChangeNeeded()) {
+      steps.push({ id: 'qty', t: 'Enough material?' });
+      if (pf.enough === false) steps.push({ id: 'loadmat', t: 'Load material' });
+    }
     steps.push({ id: 'sheet', t: pfPlatform() === 'F900' ? 'Build sheet' : 'Build tray' });
     if (pfSoluble()) steps.push({ id: 'ultra', t: 'Ultrasonic' });
     if (!(pfHighTemp() && pf.machine === 'F900' && pfChangeNeeded())) steps.push({ id: 'maint', t: 'Maintenance' });
@@ -2021,14 +2148,11 @@ function pfStepHtml(id) {
       var saved = localStorage.getItem('forgeJamsEmail') || '';
       return '<div class="pf-note">Job tracking records <b>time, material usage, and cost</b> for this print. ' +
         'The optional email is formatted so it can be copied into JAMS manually.</div>' +
-        '<label>Job name</label><input id="pfJobName" value="' + esc(pf.jobName) + '" placeholder="e.g. Duct adapter v3">' +
-        '<label>Expected print duration (hours)</label><input id="pfHours" type="number" inputmode="decimal" value="' + esc(pf.hours) + '">' +
-        '<label>Model material expected (cu in)</label><input id="pfMU" type="number" inputmode="decimal" value="' + esc(pf.modelUsage) + '">' +
-        '<label>Support material expected (cu in) \u2014 optional</label><input id="pfSU" type="number" inputmode="decimal" value="' + esc(pf.supportUsage) + '">' +
-        '<label>Part X \u00d7 Y footprint (inches) \u2014 optional</label>' +
-        '<div style="display:flex; gap:8px"><input id="pfX" type="number" inputmode="decimal" value="' + esc(pf.xDim) + '" placeholder="X" style="margin:0">' +
-        '<input id="pfY" type="number" inputmode="decimal" value="' + esc(pf.yDim) + '" placeholder="Y" style="margin:0"></div>' +
-        '<div class="l2" style="margin-top:4px">If provided, cost accuracy improves \u2014 the job is charged its share of the build ' + (plat === 'F900' ? 'sheet' : 'tray') + '\u2019s surface area.</div>' +
+        '<label>Job name</label><input id="pfJobName" value="' + esc(pf.jobName) + '" placeholder="e.g. Duct adapter v3" oninput="pfCostRefresh()">' +
+        '<label>Expected print duration (HHH:MM)</label><input id="pfHours" inputmode="numeric" placeholder="008:00" value="' + esc(pf.hours) + '" oninput="pfCostRefresh()">' +
+        '<label>Model material expected (cu in)</label><input id="pfMU" type="number" inputmode="decimal" value="' + esc(pf.modelUsage) + '" oninput="pfCostRefresh()">' +
+        '<label>Support material used (cu in)</label><input id="pfSU" type="number" inputmode="decimal" value="' + esc(pf.supportUsage) + '" placeholder="enter 0 if none" oninput="pfCostRefresh()">' +
+        '<div id="pfCost" class="mi-block" style="margin-top:12px"><div class="k">Estimated job cost</div><div id="pfCostBody" class="l2">Fill in duration and material used\u2026</div></div>' +
         '<label style="margin-top:12px">Job tracking email?</label>' +
         '<div class="btn-grid">' +
         '<button class="btn-primary" style="margin:0" onclick="pfTrackEmail(\'' + esc(saved) + '\')">Yes \u2014 email the job info</button>' +
@@ -2041,13 +2165,13 @@ function pfStepHtml(id) {
         '<div><b>' + esc(pf.jobName || '(unnamed job)') + '</b></div>' +
         '<div>' + esc(pf.machine) + ' \u00b7 ' + esc(pf.material) + (pf.support ? ' + ' + esc(pf.support) : '') + '</div>' +
         '<div class="l2">' + [pf.tipModel && 'model tip ' + pf.tipModel, pf.tipSupport && 'support tip ' + pf.tipSupport,
-          pf.head && 'head ' + pf.head, pf.sheetType && (SHEET_LABELS[pf.sheetType] || pf.sheetType), pf.hours + ' h']
+          pf.head && 'head ' + pf.head, pf.sheetType && (SHEET_LABELS[pf.sheetType] || pf.sheetType), fmtHHMM(parseHHMM(pf.hours))]
           .filter(Boolean).join(' \u00b7 ') + '</div>' +
         (pf.trackEmail ? '<div class="l2">Job tracking email \u2192 ' + esc(pf.trackEmail) + '</div>' : '') + '</div>' +
         '<label style="display:flex; gap:10px; align-items:center; text-transform:none; font-size:14.5px; color:var(--text)">' +
         '<input type="checkbox" id="pfNotify" style="width:20px; height:20px" checked> Email me when the print should be done (with a closeout link)</label>' +
         '<input id="pfNotifyEmail" placeholder="notify email" value="' + esc(em) + '" style="margin-top:8px">' +
-        '<button class="btn-primary" onclick="pfStart()">Start print \u2014 press GO on the machine</button>';
+        '<button class="btn-primary" onclick="pfStart(this)">Start print \u2014 press GO on the machine</button>';
       return h6;
     }
   }
@@ -2091,7 +2215,39 @@ function pfLogCal() {
 function pfReadTrackInputs() {
   pf.jobName = val('pfJobName'); pf.hours = val('pfHours');
   pf.modelUsage = val('pfMU'); pf.supportUsage = val('pfSU');
-  pf.xDim = val('pfX'); pf.yDim = val('pfY');
+}
+
+// live cost estimate on the Job Tracking screen — debounced, read-only on the server
+var pfCostTimer = null;
+function pfCostRefresh() {
+  pfReadTrackInputs();
+  var body = document.getElementById('pfCostBody');
+  if (!body) return;
+  var hrs = parseHHMM(pf.hours);
+  if (!(Number(pf.modelUsage) >= 0)) { body.textContent = 'Enter model material used for an estimate.'; return; }
+  body.textContent = 'Calculating\u2026';
+  clearTimeout(pfCostTimer);
+  pfCostTimer = setTimeout(function () {
+    api('estimateJobCost', {
+      machine: pf.machine, material: pf.material, supportMaterial: pf.support,
+      tipHead: pfPlatform() === 'F900' ? (pf.tipModel || pfSlot('TipModel').value) : (pf.head || pfSlot('Head').value),
+      sheetType: pf.sheetType, expectedHours: hrs > 0 ? hrs : 0,
+      modelUsage: Number(pf.modelUsage), supportUsage: pf.supportUsage === '' ? '' : Number(pf.supportUsage)
+    }).then(function (c) {
+      var el = document.getElementById('pfCostBody');
+      if (!el) return;
+      if (c.total === null) { el.textContent = c.note || 'Not enough information yet.'; return; }
+      var parts = [];
+      parts.push('Material $' + (c.material === null ? '?' : c.material));
+      if (c.support !== null) parts.push('support $' + c.support);
+      if (c.wear !== null) parts.push('wear $' + c.wear);
+      el.innerHTML = '<b style="color:var(--accent); font-size:17px">$' + c.total + '</b> <span class="l2">\u00b7 ' + esc(parts.join(' + ')) + '</span>' +
+        (c.material === null ? '<div class="warn" style="font-size:12px">' + esc(c.note) + '</div>' : '');
+    }).catch(function (e) {
+      var el = document.getElementById('pfCostBody');
+      if (el) el.textContent = 'Estimate unavailable: ' + e.message;
+    });
+  }, 600);
 }
 function pfTrackEmail(saved) {
   pfReadTrackInputs();
@@ -2106,20 +2262,26 @@ function pfTrackEmail(saved) {
 }
 function pfSaveTrack(email) {
   pfReadTrackInputs();
-  if (!(Number(pf.hours) > 0)) return alert('Enter the expected print duration.');
+  if (!(parseHHMM(pf.hours) > 0)) return alert('Enter the expected print duration as HHH:MM (e.g. 008:00).');
+  if (pf.supportUsage === '' || isNaN(Number(pf.supportUsage))) return alert('Enter support material used \u2014 put 0 if none was used.');
+  if (pf.modelUsage === '' || isNaN(Number(pf.modelUsage))) return alert('Enter the model material expected.');
   pf.trackEmail = email;
   pfDone();
 }
-function pfStart() {
+var pfStarting = false;
+function pfStart(btn) {
+  if (pfStarting) return;
   var notify = document.getElementById('pfNotify').checked;
   var email = val('pfNotifyEmail').trim();
-  if (notify && !email) return alert('Enter an email for the done-notification, or untick it.');
+  if (notify && !email) { if (btn) unlockButton(btn); return alert('Enter an email for the done-notification, or untick it.'); }
+  pfStarting = true;
+  // immediate visual confirmation so nobody taps twice while the save is in flight
+  if (btn) { btn.classList.add('done-flash'); btn.textContent = '\u2713 Job started \u2014 press GO on the machine'; }
   api('startJob', {
     machine: pf.machine, material: pf.material, supportMaterial: pf.support,
     tipHead: pfPlatform() === 'F900' ? (pf.tipModel || pfSlot('TipModel').value) : (pf.head || pfSlot('Head').value),
-    sheetType: pf.sheetType, expectedHours: Number(pf.hours),
-    jobName: pf.jobName, modelUsage: pf.modelUsage, supportUsage: pf.supportUsage,
-    xDim: pf.xDim, yDim: pf.yDim, soluble: pfSoluble(),
+    sheetType: pf.sheetType, expectedHours: parseHHMM(pf.hours),
+    jobName: pf.jobName, modelUsage: pf.modelUsage, supportUsage: pf.supportUsage, soluble: pfSoluble(),
     notifyEmail: notify ? email : '', trackEmail: pf.trackEmail || '', name: opName(), note: ''
   }).then(function (r) {
     // machine state reflects what the workflow just set up
@@ -2145,7 +2307,11 @@ function pfStart() {
     if (Object.keys(updates).length) {
       api('updateMachineState', { machine: pf.machine, updates: updates, name: opName() }).then(after).catch(function () { after(); });
     } else after();
-  }).catch(function (e) { alert(e.message); });
+  }).catch(function (e) {
+    pfStarting = false;
+    if (btn) { btn.classList.remove('done-flash'); btn.textContent = 'Start print \u2014 press GO on the machine'; unlockButton(btn); }
+    alert(e.message);
+  });
 }
 
 // ============================================================ post-job closeout (iteration 5)
@@ -2188,14 +2354,10 @@ function renderCloseout() {
   var j = co.job;
   var b = document.getElementById('closeBody');
   var h = '<div class="mi-block"><b style="font-size:16.5px">' + esc(j.jobName || j.material) + '</b>' +
-    '<div class="l2">' + esc(j.machine) + ' \u00b7 ' + esc(j.material) + ' \u00b7 started ' + esc(j.at) + ' by ' + esc(j.by) + ' \u00b7 expected ' + j.expectedHours + ' h</div></div>';
-  // only ask for usage if it wasn't provided at job tracking
-  if (j.modelUsage === null) {
-    h += '<label>Model material used (cu in)</label><input id="coUsage" type="number" inputmode="decimal" placeholder="from the machine\u2019s job report">';
-  } else {
-    h += '<div class="pf-note">Material used: <b>' + j.modelUsage + ' ci</b> (entered at job start \u2014 not re-asked). ' +
-      '<span class="tappable" style="text-decoration:underline" onclick="this.parentNode.outerHTML=\'<label>Model material used (cu in)</label><input id=coUsage type=number inputmode=decimal value=' + j.modelUsage + '>\'">correct it</span></div>';
-  }
+    '<div class="l2">' + esc(j.machine) + ' \u00b7 ' + esc(j.material) + ' \u00b7 started ' + esc(j.at) + ' by ' + esc(j.by) + ' \u00b7 expected ' + fmtHHMM(j.expectedHours) + '</div></div>';
+  // usage comes forward from the Job Tracking step — never re-asked here (iteration 6)
+  h += '<div class="pf-note">Material used: <b>' + (j.modelUsage === null ? '\u2014' : j.modelUsage + ' ci model') +
+    (j.supportUsage === null ? '' : ' \u00b7 ' + j.supportUsage + ' ci support') + '</b> <span class="l2">(from job start)</span></div>';
   h += '<div class="pf-note">Also log the canister/spool\u2019s new remaining volume with a normal scan, and update the material log on the box' + (j.machine === 'F900' ? ' and the F900 canister log' : '') + '.</div>';
   if (j.machine === 'F900' && j.tipHead) {
     h += '<label>Tip odometer now (' + esc(j.tipHead) + ') \u2014 blank to skip</label><input id="coTip" type="number" inputmode="decimal">';
@@ -2212,7 +2374,7 @@ function renderCloseout() {
     h += '<label>Job tracking email \u2014 blank to skip</label><input id="coJams" placeholder="email for job tracking info" value="' + esc(localStorage.getItem('forgeJamsEmail') || '') + '">';
   }
   h += '<div class="tappable" style="border:1px dashed var(--line); border-radius:10px; padding:18px; text-align:center; margin-top:12px; font-size:15px" onclick="document.getElementById(\'coPhoto\').click()">\ud83d\udcf7 Attach photos of the finished print (up to 5, optional)</div>';
-  h += '<input type="file" id="coPhoto" accept="image/*" capture="environment" multiple style="display:none" onchange="coPhotoCount(this)"><div class="l2" id="coPhotoName" style="text-align:center; margin-top:4px"></div>';
+  h += '<input type="file" id="coPhoto" accept="image/*" multiple style="display:none" onchange="coPhotoCount(this)"><div class="l2" id="coPhotoName" style="text-align:center; margin-top:4px"></div>';
   h += '<button class="btn-primary" onclick="submitCloseout(false)">Finish closeout</button>';
   h += '<button class="btn-cancel" onclick="submitCloseout(true)">Skip closeout</button>';
   h += '<button class="btn-danger" style="width:100%; margin-top:8px" onclick="reportStopPrompt(\'' + j.jobId + '\')">Report unexpected stop</button>';
@@ -2224,9 +2386,7 @@ function coPhotoCount(input) {
 }
 function submitCloseout(skipped) {
   var j = co.job;
-  var usageEl = document.getElementById('coUsage');
-  var usage = skipped ? '' : (usageEl ? val('coUsage') : '');
-  if (!skipped && usageEl && (usage === '' || isNaN(Number(usage)))) return alert('Enter material used (cu in), or use Skip.');
+  var usage = '';   // backend falls back to the usage entered at job start
   var finish = function () {
     api('closeJob', { jobId: j.jobId, usage: usage, ultrasonicTime: (document.getElementById('coUltra') ? val('coUltra') : ''), skipped: skipped, name: opName(), note: '' })
       .then(function (r) {
