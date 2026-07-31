@@ -115,13 +115,13 @@
 
   /* confirmation overlay */
   #overlay { position: fixed; inset: 0; background: rgba(10,14,18,.94); display: flex;
-    flex-direction: column; align-items: center; justify-content: center; z-index: 50; text-align: center; padding: 20px; }
+    flex-direction: column; align-items: center; justify-content: center; z-index: 9999; text-align: center; padding: 20px; }
   #overlay .big { font-size: 22px; font-weight: 700; color: var(--ok); }
   #overlay .big.queued { color: var(--caution); }
   #overlay .sub { color: var(--dim); margin-top: 8px; font-family: var(--mono); }
 
   /* modals */
-  .modal { position: fixed; inset: 0; background: rgba(10,14,18,.96); z-index: 60;
+  .modal { position: fixed; inset: 0; background: rgba(10,14,18,.96); z-index: 100;
     padding: calc(16px + env(safe-area-inset-top)) 16px 40px; overflow-y: auto; }
   .modal header { position: sticky; top: 0; background: rgba(10,14,18,.96); padding: 4px 0 10px; }
   .modal h1 { color: var(--text); font-size: 16px; margin: 0; }
@@ -1423,40 +1423,86 @@ function invMaterialOptions(platform, selectedVal) {
   }).join('');
 }
 
+function conSecOpen(key) { return !!conOpen['sec|' + key]; }
+function conSecToggle(key) { conOpen['sec|' + key] = !conOpen['sec|' + key]; conTab(conCur); }
+function conHdr(key, label, extra) {
+  return '<div class="k tappable" onclick="conSecToggle(\'' + key + '\')">' +
+    (conSecOpen(key) ? '\u25be ' : '\u25b8 ') + esc(label) + (extra ? ' <span class="l2">' + esc(extra) + '</span>' : '') + '</div>';
+}
+/** alphanumeric tip-type sort: T12 < T12SR30 < T16 < T16A < T20 < T40A */
+function tipTypeSort(a, b) {
+  var pa = String(a).match(/^T(\d+)(.*)$/), pb = String(b).match(/^T(\d+)(.*)$/);
+  if (pa && pb) {
+    var n = Number(pa[1]) - Number(pb[1]);
+    if (n) return n;
+    return pa[2].localeCompare(pb[2]);
+  }
+  return String(a).localeCompare(String(b));
+}
+
 function renderTips(b) {
-  var h = '<div class="mi-block"><div class="k">New tips in stock (unserialized)</div>';
-  var stockTypes = Object.keys(conCache.tipStock || {}).sort();
-  h += stockTypes.length
-    ? stockTypes.map(function (t) { return '<span class="mono">' + esc(t) + '</span>: ' + conCache.tipStock[t]; }).join(' \u00b7 ')
-    : 'none \u2014 add received tips below';
+  var stockTypes = Object.keys(conCache.tipStock || {}).filter(function (t) { return conCache.tipStock[t] > 0 || conCache.tipStock[t] === 0; }).sort(tipTypeSort);
+  var totalNew = stockTypes.reduce(function (s, t) { return s + (conCache.tipStock[t] || 0); }, 0);
+
+  // ── new tips in stock: collapsed, two-column, sorted ──
+  var h = '<div class="mi-block">' + conHdr('tipstock', 'New tips in stock (unserialized)', totalNew + ' total');
+  if (conSecOpen('tipstock')) {
+    h += stockTypes.length
+      ? '<div style="margin-top:8px">' + stockTypes.map(function (t) {
+          return '<div style="display:flex; justify-content:space-between; padding:5px 2px; border-bottom:1px solid var(--line)">' +
+            '<span class="mono">' + esc(t) + '</span><span>' + conCache.tipStock[t] + '</span></div>';
+        }).join('') + '</div>'
+      : '<div class="l2" style="margin-top:8px">None \u2014 add received tips below.</div>';
+  }
   h += '</div>';
 
-  // intake action 1: bulk, unserialized
-  h += '<div class="mi-block"><div class="k">Add new tips to inventory</div>' +
-    '<div style="display:flex; gap:8px"><input id="tsType" placeholder="Tip type (e.g. T16)" style="flex:2; margin:0">' +
-    '<input id="tsQty" type="number" inputmode="numeric" placeholder="Qty" style="flex:1; margin:0"></div>' +
-    '<button class="btn-ghost" style="width:100%; padding:9px; margin-top:8px" onclick="tipStockAdd()">Add to new pool</button></div>';
+  // ── bulk intake: collapsed ──
+  h += '<div class="mi-block">' + conHdr('tipadd', 'Add new tips to inventory');
+  if (conSecOpen('tipadd')) {
+    h += '<div style="display:flex; gap:8px; margin-top:8px"><input id="tsType" placeholder="Tip type (e.g. T16)" style="flex:2; margin:0">' +
+      '<input id="tsQty" type="number" inputmode="numeric" placeholder="Qty" style="flex:1; margin:0"></div>' +
+      '<button class="btn-ghost" style="width:100%; padding:9px; margin-top:8px" onclick="tipStockAdd()">Add to new pool</button>';
+  }
+  h += '</div>';
 
-  // intake action 2: serialize one from the pool
-  h += '<div class="mi-block"><div class="k">Use new tip (assigns the next number automatically)</div>' +
-    '<select id="utType">' + (stockTypes.length ? stockTypes.map(function (t) {
-      return '<option>' + esc(t) + '</option>';
-    }).join('') : '<option value="">\u2014 no new tips in stock \u2014</option>') + '</select>' +
-    '<label>Material it\u2019s being assigned to</label>' +
-    '<select id="utMaterial">' + invMaterialOptions('F900') + '</select>' +
-    '<button class="btn-primary" style="margin-top:10px" onclick="tipUseNew()">Use new tip</button></div>';
+  // ── serialize a tip: plain button first, expands to the form ──
+  h += '<div class="mi-block">' + conHdr('tipuse', 'Use new tip');
+  if (conSecOpen('tipuse')) {
+    h += '<div class="l2" style="margin-top:6px">Pulls one from the new pool and assigns it the next number for that type.</div>' +
+      '<select id="utType">' + (stockTypes.length ? stockTypes.map(function (t) {
+        return '<option>' + esc(t) + '</option>';
+      }).join('') : '<option value="">\u2014 no new tips in stock \u2014</option>') + '</select>' +
+      '<label>Material it\u2019s being assigned to</label>' +
+      '<select id="utMaterial">' + invMaterialOptions('F900') + '</select>' +
+      '<button class="btn-primary" style="margin-top:10px" onclick="tipUseNew()">Use new tip</button>';
+  }
+  h += '</div>';
 
-  h += '<div class="k" style="margin-top:14px; text-transform:uppercase; font-size:11px; color:var(--dim)">Serialized tips</div>';
+  // ── serialized tips grouped by assigned material, collapsed ──
+  h += '<div class="k" style="margin-top:14px; text-transform:uppercase; font-size:11px; color:var(--dim)">Serialized tips <span style="opacity:.6">\u00b7 tap a material to expand</span></div>';
+  var groups = {};
   conCache.tips.forEach(function (t) {
-    h += '<div class="lrow"><div class="l1"><span class="mono">' + esc(t.tipId) + '</span>' +
-      '<span>' + (t.usage !== null ? t.usage + ' ci used' : '\u2014') + '</span></div>' +
-      '<div class="l2">' + (t.assignedMaterial ? esc(t.assignedMaterial) : 'unassigned') +
-      (t.lastReading !== null ? ' \u00b7 last odo ' + t.lastReading + ' (' + esc(t.lastReadingAt) + ')' : '') + '</div>' +
-      '<div class="btn-grid" style="margin-top:6px"><button class="btn-ghost" style="padding:8px" onclick="tipReadingPrompt(\'' + t.tipId + '\')">Log reading</button>' +
-      '<button class="btn-ghost" style="padding:8px" onclick="tipOdoPrompt(\'' + t.tipId + '\',' + (t.usage === null ? 0 : t.usage) + ')">Set total ci</button>' +
-      '<button class="btn-danger" style="padding:8px" onclick="tipRetirePrompt(\'' + t.tipId + '\')">Retire</button></div></div>';
+    var key = t.assignedMaterial || 'Unassigned';
+    (groups[key] = groups[key] || []).push(t);
   });
-  if (!conCache.tips.length) h += '<div class="lrow">No serialized tips yet \u2014 \u201cUse new tip\u201d creates them.</div>';
+  var names = Object.keys(groups).sort();
+  if (!names.length) h += '<div class="lrow">No serialized tips yet \u2014 \u201cUse new tip\u201d creates them.</div>';
+  names.forEach(function (mat) {
+    var key = 'tipmat|' + mat;
+    h += '<div class="lrow"><div class="l1 tappable" onclick="conSecToggle(\'' + esc(key).replace(/'/g, "\\'") + '\')">' +
+      '<b>' + (conSecOpen(key) ? '\u25be ' : '\u25b8 ') + esc(mat) + '</b><span>' + groups[mat].length + '</span></div>';
+    if (conSecOpen(key)) {
+      groups[mat].forEach(function (t) {
+        h += '<div style="margin:8px 0 4px 12px"><div class="l1"><span class="mono">' + esc(t.tipId) + '</span>' +
+          '<span>' + (t.usage !== null ? t.usage + ' ci' : '\u2014') + '</span></div>' +
+          (t.lastReading !== null ? '<div class="l2">last reading ' + t.lastReading + ' \u00b7 ' + esc(t.lastReadingAt) + '</div>' : '') +
+          '<div class="btn-grid" style="margin-top:6px">' +
+          '<button class="btn-ghost" style="padding:8px" onclick="tipOdoPrompt(\'' + t.tipId + '\',' + (t.usage === null ? 0 : t.usage) + ')">Log usage (ci)</button>' +
+          '<button class="btn-danger" style="padding:8px" onclick="tipRetirePrompt(\'' + t.tipId + '\')">Retire</button></div></div>';
+      });
+    }
+    h += '</div>';
+  });
   b.innerHTML = h;
 }
 function tipStockAdd() {
@@ -1471,17 +1517,6 @@ function tipUseNew() {
     .then(function (r) { toast('Serialized ' + r.tipId + ' \u2014 write it on the tube'); refreshCon(); })
     .catch(function (e) { alert(e.message); });
 }
-function tipReadingPrompt(tipId) {
-  var v = prompt('Current odometer reading for ' + tipId + ':');
-  if (v === null) return;
-  api('logTipReading', { tipId: tipId, reading: Number(v), name: opName(), note: '' })
-    .then(function (r) {
-      if (r.flagged) alert('\u26a0 Reading went BACKWARD (previous ' + r.previous + '). This usually means an unlogged tip swap \u2014 check which tip is actually installed.');
-      else toast(tipId + ': ' + r.usage + ' ci used since install');
-      refreshCon();
-    })
-    .catch(function (e) { alert(e.message); });
-}
 function tipRetirePrompt(tipId) {
   var note = prompt('Retire ' + tipId + ' \u2014 reason (required):');
   if (note === null) return;
@@ -1490,14 +1525,11 @@ function tipRetirePrompt(tipId) {
     .catch(function (e) { alert(e.message); });
 }
 
-var conRegOpen = false;
-function conRegToggle() { conRegOpen = !conRegOpen; conTab(conCur); }
 function renderHeads(b) {
-  // manual registration, collapsed by default (iteration 6)
-  var h = '<div class="mi-block"><div class="k tappable" onclick="conRegToggle()">' +
-    (conRegOpen ? '\u25be ' : '\u25b8 ') + 'Register a head</div>';
-  if (conRegOpen) {
-    h += '<select id="rhType" onchange="rhTypeChange()"><option value="STANDARD">Standard head</option><option value="ABS-CF10">ABS-CF10 head</option></select>' +
+  // registration collapsed by default (iteration 6)
+  var h = '<div class="mi-block">' + conHdr('headreg', 'Register a head');
+  if (conSecOpen('headreg')) {
+    h += '<select id="rhType" onchange="rhTypeChange()" style="margin-top:8px"><option value="STANDARD">Standard head</option><option value="ABS-CF10">ABS-CF10 head</option></select>' +
       '<input id="rhSerial" placeholder="Serial number on the head" style="margin-top:8px">' +
       '<label>Material it\u2019s assigned to</label>' +
       '<select id="rhMaterial">' + invMaterialOptions('F370') + '</select>' +
@@ -1506,18 +1538,34 @@ function renderHeads(b) {
   }
   h += '</div>';
 
-  h += '<div class="k" style="margin-top:14px; text-transform:uppercase; font-size:11px; color:var(--dim)">Heads</div>';
+  // heads grouped by assigned material, collapsed
+  h += '<div class="k" style="margin-top:14px; text-transform:uppercase; font-size:11px; color:var(--dim)">Heads <span style="opacity:.6">\u00b7 tap a material to expand</span></div>';
+  var groups = {};
   conCache.heads.forEach(function (hd) {
-    var warn = hd.hoursUsed >= hd.lifeHours ? ' style="color:var(--warn); font-weight:700"' : '';
-    h += '<div class="lrow"><div class="l1"><span class="mono">' + esc(hd.serial) + '</span>' +
-      '<span' + warn + '>' + hd.hoursUsed + '/' + hd.lifeHours + ' hrs</span></div>' +
-      '<div class="l2">' + esc(hd.headType === 'ABS-CF10' ? 'ABS-CF10 head' : 'Standard head') + ' \u00b7 ' +
-      (hd.assignedMaterial ? esc(hd.assignedMaterial) : 'unassigned') + (hd.machine ? ' \u00b7 ' + esc(hd.machine) : '') + '</div>' +
-      '<div class="btn-grid" style="margin-top:6px"><button class="btn-ghost" style="padding:8px" onclick="headHoursPrompt(\'' + esc(hd.serial) + '\',' + hd.hoursUsed + ')">Set hours</button>' +
-      '<button class="btn-ghost" style="padding:8px" onclick="headAssignPrompt(\'' + esc(hd.serial) + '\')">Reassign</button>' +
-      '<button class="btn-danger" style="padding:8px" onclick="headRetirePrompt(\'' + esc(hd.serial) + '\')">Retire</button></div></div>';
+    var key = hd.assignedMaterial || 'Unassigned';
+    (groups[key] = groups[key] || []).push(hd);
   });
-  if (!conCache.heads.length) h += '<div class="lrow">No heads registered yet.</div>';
+  var names = Object.keys(groups).sort();
+  if (!names.length) h += '<div class="lrow">No heads registered yet.</div>';
+  names.forEach(function (mat) {
+    var key = 'headmat|' + mat;
+    h += '<div class="lrow"><div class="l1 tappable" onclick="conSecToggle(\'' + esc(key).replace(/'/g, "\\'") + '\')">' +
+      '<b>' + (conSecOpen(key) ? '\u25be ' : '\u25b8 ') + esc(mat) + '</b><span>' + groups[mat].length + '</span></div>';
+    if (conSecOpen(key)) {
+      groups[mat].forEach(function (hd) {
+        var warn = hd.hoursUsed >= hd.lifeHours ? ' style="color:var(--warn); font-weight:700"' : '';
+        h += '<div style="margin:8px 0 4px 12px"><div class="l1"><span class="mono">' + esc(hd.serial) + '</span>' +
+          '<span' + warn + '>' + hd.hoursUsed + '/' + hd.lifeHours + ' hrs</span></div>' +
+          '<div class="l2">' + esc(hd.headType === 'ABS-CF10' ? 'ABS-CF10 head' : 'Standard head') +
+          (hd.machine ? ' \u00b7 ' + esc(hd.machine) : '') + '</div>' +
+          '<div class="btn-grid" style="margin-top:6px">' +
+          '<button class="btn-ghost" style="padding:8px" onclick="headHoursPrompt(\'' + esc(hd.serial) + '\',' + hd.hoursUsed + ')">Set hours</button>' +
+          '<button class="btn-ghost" style="padding:8px" onclick="headAssignPrompt(\'' + esc(hd.serial) + '\')">Reassign</button>' +
+          '<button class="btn-danger" style="padding:8px" onclick="headRetirePrompt(\'' + esc(hd.serial) + '\')">Retire</button></div></div>';
+      });
+    }
+    h += '</div>';
+  });
   b.innerHTML = h;
 }
 function rhTypeChange() {
@@ -1540,22 +1588,30 @@ function headAssignPrompt(serial) {
     .catch(function (e) { alert(e.message); });
 }
 // manual odometer overrides — reachable from Consumables and from Printer Status
+// one control per consumable: enter the new running total, no note step.
+// A value below the previous reading is flagged rather than silently accepted.
 function headHoursPrompt(serial, current) {
-  var v = prompt('Set total hours on head ' + serial + ' (absolute running total, not an addition):', current);
+  var v = prompt('Total hours on head ' + serial + ' (running total):', current);
   if (v === null) return;
   if (!(Number(v) >= 0)) return alert('Enter hours as a number, e.g. 320.');
-  var note = prompt('Note (optional) — why is this being set?') || '';
-  api('setHeadHours', { serial: serial, hours: Number(v), name: opName(), note: note })
-    .then(function (r) { toast(serial + ': ' + r.hoursUsed + '/' + r.lifeHours + ' hrs'); refreshConIfOpen(); if (stCache) openStatus(); })
+  api('setHeadHours', { serial: serial, hours: Number(v), name: opName(), note: '' })
+    .then(function (r) {
+      if (r.flagged) alert('\u26a0 ' + serial + ' set to ' + r.hoursUsed + ' hrs, which is LOWER than the previous ' + r.previous + ' hrs.\n\nThis usually means a head swap that wasn\u2019t logged. It has been recorded and flagged on the Sheet.');
+      else toast(serial + ': ' + r.hoursUsed + '/' + r.lifeHours + ' hrs');
+      refreshConIfOpen(); if (stCache) openStatus();
+    })
     .catch(function (e) { alert(e.message); });
 }
 function tipOdoPrompt(tipId, current) {
-  var v = prompt('Set cumulative cu in run through ' + tipId + ' (absolute total, not an addition):', current);
+  var v = prompt('Cumulative cu in run through ' + tipId + ' (running total):', current);
   if (v === null) return;
   if (!(Number(v) >= 0)) return alert('Enter cubic inches as a number, e.g. 640.');
-  var note = prompt('Note (optional) — why is this being set?') || '';
-  api('setTipOdometer', { tipId: tipId, cuIn: Number(v), name: opName(), note: note })
-    .then(function (r) { toast(tipId + ': ' + r.usage + ' ci total'); refreshConIfOpen(); if (stCache) openStatus(); })
+  api('setTipOdometer', { tipId: tipId, cuIn: Number(v), name: opName(), note: '' })
+    .then(function (r) {
+      if (r.flagged) alert('\u26a0 ' + tipId + ' set to ' + r.usage + ' ci, which is LOWER than the previous ' + r.previous + ' ci.\n\nThis usually means a tip swap that wasn\u2019t logged. It has been recorded and flagged on the Sheet.');
+      else toast(tipId + ': ' + r.usage + ' ci total');
+      refreshConIfOpen(); if (stCache) openStatus();
+    })
     .catch(function (e) { alert(e.message); });
 }
 function refreshConIfOpen() {
@@ -1624,15 +1680,9 @@ function renderUpkeep() {
   if (upkMode === 'cal') {
     h += '<label>Material (model materials in inventory)</label><select id="upkMaterial"></select>';
     h += '<div id="calVideo" style="margin:6px 0"></div>';
+    h += '<div id="lastCal" class="mi-block" style="margin-top:10px"></div>';
     h += '<label>Note (optional)</label><input id="upkNote">';
     h += '<button class="btn-primary" onclick="submitUpkeep()">Log calibration</button>';
-    if (upkCache.calibrations.length) {
-      h += '<div class="mi-block" style="margin-top:14px"><div class="k">Last calibrated</div>';
-      upkCache.calibrations.forEach(function (c) {
-        h += '<div class="l2">' + esc(c.machine) + ' · ' + esc(c.material) + ' — ' + esc(c.date) + ' by ' + esc(c.name) + '</div>';
-      });
-      h += '</div>';
-    }
   } else {
     h += '<label>Maintenance performed (select all that apply)</label><div id="upkTypes"></div>';
     h += '<div class="cautionbox hidden" id="vacNote" style="margin-top:10px">Don\u2019t use bristle attachments if the printer is hot.</div>';
@@ -1656,13 +1706,30 @@ function renderUpkeep() {
   }
 }
 function paintCalMaterials() {
-  var plat = val('upkMachine') === 'F900' ? 'F900' : 'F370';
+  var machine = val('upkMachine');
+  var plat = machine === 'F900' ? 'F900' : 'F370';
   var mats = (upkCache.modelMaterials || {})[plat] || [];
-  document.getElementById('upkMaterial').innerHTML = mats.length
-    ? mats.map(function (m) { return '<option>' + esc(m) + '</option>'; }).join('')
-    : '<option value="">\u2014 no ' + plat + ' model materials in inventory \u2014</option>';
+  // starts blank so nothing is preselected by accident
+  document.getElementById('upkMaterial').innerHTML =
+    '<option value="">\u2014 select material \u2014</option>' +
+    (mats.length ? mats.map(function (m) { return '<option>' + esc(m) + '</option>'; }).join('') : '');
   document.getElementById('calVideo').innerHTML = vlink(plat === 'F900' ? VID.f900tipcal : VID.f370tipcal,
     plat === 'F900' ? 'F900 tip-offset calibration video' : 'F370 tip calibration video');
+  paintLastCal(machine);
+}
+function paintLastCal(machine) {
+  var box = document.getElementById('lastCal');
+  if (!box) return;
+  // only the most recent calibration for the machine currently selected
+  var latest = null;
+  (upkCache.calibrations || []).forEach(function (c) {
+    if (c.machine !== machine) return;
+    if (!latest || String(c.date) > String(latest.date)) latest = c;
+  });
+  box.innerHTML = latest
+    ? '<div class="k">Last calibrated \u2014 ' + esc(machine) + '</div><div>' + esc(latest.material) +
+      '<div class="l2">' + esc(latest.date) + ' by ' + esc(latest.name) + '</div></div>'
+    : '<div class="k">Last calibrated \u2014 ' + esc(machine) + '</div><div class="l2">No calibration on record.</div>';
 }
 function maintListFor(machine) {
   var plat = machine === 'F900' ? 'F900' : 'F370';
@@ -1694,6 +1761,7 @@ function selectedMaintTypes() {
 }
 function submitUpkeep() {
   var machine = val('upkMachine'), note = val('upkNote');
+  if (upkMode === 'cal' && !val('upkMaterial')) return alert('Select the material that was calibrated.');
   var p = upkMode === 'cal'
     ? api('logCalibration', { machine: machine, material: val('upkMaterial'), name: opName(), note: note })
     : api('logMaintenance', { machine: machine, mtype: selectedMaintTypes(), name: opName(), note: note });
@@ -1789,35 +1857,49 @@ function openStatus() {
   show('statusModal');
   var b = document.getElementById('statusBody');
   b.textContent = 'Loading\u2026';
-  Promise.all([api('getPrinterStatus'), api('getConsumables')]).then(function (r) {
-    stCache = r[0]; stCon = r[1];
+  Promise.all([api('getPrinterStatus'), api('getConsumables'), api('getMaterialInfo')]).then(function (r) {
+    stCache = r[0]; stCon = r[1]; stMi = r[2];
     renderStatus();
   }).catch(function (e) { b.textContent = 'Could not load: ' + e.message; });
 }
-var stCache = null, stCon = null, stEditing = null;
+var stCache = null, stCon = null, stMi = null, stEditing = null;
 var SLOT_LABELS = { M1: 'M1 (model)', M2: 'M2 (model)', S1: 'S1 (support)', S2: 'S2 (support)',
   Bay1: 'Bay 1 (model)', Bay2: 'Bay 2 (model)', Bay3: 'Bay 3 (support)', Bay4: 'Bay 4 (support)',
-  TipModel: 'Model tip (left)', TipSupport: 'Support tip (right)', Head: 'Head', Top: 'Top bay', Bottom: 'Bottom bay' };
+  TipModel: 'Model tip', TipSupport: 'Support tip', HeadModel: 'Model head', HeadSupport: 'Support head',
+  Top: 'Top bay', Bottom: 'Bottom bay' };
+var MATERIAL_SLOTS = { M1: 1, M2: 1, S1: 1, S2: 1, Bay1: 1, Bay2: 1, Bay3: 1, Bay4: 1, Top: 1, Bottom: 1 };
+// which material bay each consumable slot is paired with, for assignment filtering
+var SLOT_PAIR = { TipModel: 'M1', TipSupport: 'S1', HeadModel: 'Bay1', HeadSupport: 'Bay3' };
 
 function stOptions(list, current, allowBlank) {
   var h = allowBlank ? '<option value=""' + (current ? '' : ' selected') + '>\u2014 empty \u2014</option>' : '';
   var seen = false;
   list.forEach(function (v) {
-    var sel = v === current;
-    if (sel) seen = true;
-    h += '<option' + (sel ? ' selected' : '') + '>' + esc(v) + '</option>';
+    if (v === current) seen = true;
+    h += '<option' + (v === current ? ' selected' : '') + '>' + esc(v) + '</option>';
   });
-  if (current && !seen) h += '<option selected>' + esc(current) + '</option>'; // keep a stale value visible
+  if (current && !seen) h += '<option selected>' + esc(current) + '</option>';   // keep a stale value visible
   return h;
 }
+function stCurrent(machine, slot) {
+  var out = '';
+  (stCache || []).forEach(function (s) {
+    if (s.machine !== machine) return;
+    s.slots.forEach(function (sl) { if (sl.slot === slot) out = sl.value; });
+  });
+  return out;
+}
+/** live value of a bay's dropdown while editing, falling back to saved state */
+function stBayValue(machine, slot) {
+  var el = document.getElementById('st_' + machine.replace(/\s/g, '_') + '_' + slot);
+  return el ? el.value : stCurrent(machine, slot);
+}
 
-/** Per-slot dropdown source, honoring the inventory-only + support-bay rules. */
 function stChoicesFor(machine, slot) {
   var plat = machine === 'F900' ? 'F900' : 'F370';
   var models = (stCon.modelMaterials[plat] || []).map(function (m) { return m.material; });
   var sups = (stCon.supportMaterials[plat] || []).map(function (m) { return m.material; });
   if (machine === 'FDC') {
-    // FDC: any in-inventory material, either bay, no restriction
     var all = [];
     ['F900', 'F370'].forEach(function (p) {
       (stCon.modelMaterials[p] || []).concat(stCon.supportMaterials[p] || []).forEach(function (m) { all.push(m.material); });
@@ -1826,12 +1908,18 @@ function stChoicesFor(machine, slot) {
   }
   if (slot === 'M1' || slot === 'M2' || slot === 'Bay1' || slot === 'Bay2') return models;
   if (slot === 'S1' || slot === 'S2') return sups;
-  if (slot === 'Bay3' || slot === 'Bay4') {
-    // F370 support bays: QSR or SUP4000B only
-    return sups.filter(function (m) { return /qsr|sup\s*4000\s*b/i.test(m); });
+  if (slot === 'Bay3' || slot === 'Bay4') return sups.filter(function (m) { return /qsr|sup ?4000 ?b/i.test(m); });
+  // consumables: only items assigned to the material in the paired bay
+  var pairSlot = SLOT_PAIR[slot];
+  var mat = pairSlot ? stBayValue(machine, pairSlot) : '';
+  if (slot === 'TipModel' || slot === 'TipSupport') {
+    return (stCon.tips || []).filter(function (t) { return !mat || normEq(t.assignedMaterial, mat); })
+      .map(function (t) { return t.tipId; });
   }
-  if (slot === 'TipModel' || slot === 'TipSupport') return stCon.tips.map(function (t) { return t.tipId; });
-  if (slot === 'Head') return stCon.heads.map(function (h) { return h.serial; });
+  if (slot === 'HeadModel' || slot === 'HeadSupport') {
+    return (stCon.heads || []).filter(function (hd) { return !mat || normEq(hd.assignedMaterial, mat); })
+      .map(function (hd) { return hd.serial; });
+  }
   return [];
 }
 
@@ -1839,54 +1927,80 @@ function renderStatus() {
   var b = document.getElementById('statusBody');
   var h = '';
   stCache.forEach(function (s) {
+    var mid = s.machine.replace(/\s/g, '_');
     h += '<div class="mi-block"><div class="l1" style="display:flex; justify-content:space-between"><b>' + esc(s.machine) + '</b>' +
       '<button class="btn-ghost" style="padding:6px 14px; font-size:12.5px" onclick="withName(function(){stEdit(\'' + esc(s.machine) + '\')})">' +
       (stEditing === s.machine ? 'Cancel' : 'Update') + '</button></div>';
     if (stEditing === s.machine) {
       s.slots.forEach(function (sl) {
         h += '<label>' + (SLOT_LABELS[sl.slot] || sl.slot) + '</label>' +
-          '<select id="st_' + esc(s.machine).replace(/\s/g, '_') + '_' + sl.slot + '">' +
+          '<select id="st_' + mid + '_' + sl.slot + '"' +
+          (MATERIAL_SLOTS[sl.slot] ? ' onchange="stBayChanged(\'' + esc(s.machine) + '\',\'' + sl.slot + '\')"' : '') + '>' +
           stOptions(stChoicesFor(s.machine, sl.slot), sl.value, true) + '</select>';
-      });
-      // same odometer overrides as the Consumables tab, exposed here too (iteration 6)
-      if (s.machine !== 'FDC') {
-        var odo = '';
-        if (s.machine === 'F900') {
-          ['TipModel', 'TipSupport'].forEach(function (slot) {
-            var cur = '';
-            s.slots.forEach(function (sl) { if (sl.slot === slot) cur = sl.value; });
-            if (cur) {
-              var t = null;
-              (stCon.tips || []).forEach(function (x) { if (x.tipId === cur) t = x; });
-              odo += '<button class="btn-ghost" style="padding:8px" onclick="tipOdoPrompt(\'' + esc(cur) + '\',' + (t && t.usage !== null ? t.usage : 0) + ')">Set ' + esc(cur) + ' total ci</button>';
-            }
-          });
-        } else {
-          var curH = '';
-          s.slots.forEach(function (sl) { if (sl.slot === 'Head') curH = sl.value; });
-          if (curH) {
-            var hd = null;
-            (stCon.heads || []).forEach(function (x) { if (x.serial === curH) hd = x; });
-            odo += '<button class="btn-ghost" style="padding:8px" onclick="headHoursPrompt(\'' + esc(curH) + '\',' + (hd ? hd.hoursUsed : 0) + ')">Set ' + esc(curH) + ' hours</button>';
-          }
+        // informational-only remaining-ci note, shown only for a filled material bay
+        if (MATERIAL_SLOTS[sl.slot]) {
+          var hideIt = sl.value ? '' : ' hidden';
+          h += '<div id="ci_' + mid + '_' + sl.slot + '" class="' + hideIt.trim() + '" style="display:flex; gap:8px; align-items:center; margin-top:6px">' +
+            '<input id="stci_' + mid + '_' + sl.slot + '" type="number" inputmode="decimal" placeholder="remaining ci" ' +
+            'value="' + esc((s.notes && s.notes[sl.slot] !== undefined) ? s.notes[sl.slot] : '') + '" style="margin:0; max-width:150px">' +
+            '<span class="l2">note only \u2014 does not change Inventory</span></div>';
         }
-        if (odo) h += '<div class="btn-grid" style="margin-top:10px">' + odo + '</div>';
+      });
+      // odometer overrides for whatever consumable is currently selected
+      var odo = '';
+      if (s.machine === 'F900') {
+        ['TipModel', 'TipSupport'].forEach(function (slot) {
+          var cur = stCurrent(s.machine, slot);
+          if (!cur) return;
+          var t = null;
+          (stCon.tips || []).forEach(function (x) { if (x.tipId === cur) t = x; });
+          odo += '<button class="btn-ghost" style="padding:8px" onclick="tipOdoPrompt(\'' + esc(cur) + '\',' + (t && t.usage !== null ? t.usage : 0) + ')">Log usage \u2014 ' + esc(cur) + '</button>';
+        });
+      } else if (s.machine !== 'FDC') {
+        ['HeadModel', 'HeadSupport'].forEach(function (slot) {
+          var cur = stCurrent(s.machine, slot);
+          if (!cur) return;
+          var hd = null;
+          (stCon.heads || []).forEach(function (x) { if (x.serial === cur) hd = x; });
+          odo += '<button class="btn-ghost" style="padding:8px" onclick="headHoursPrompt(\'' + esc(cur) + '\',' + (hd ? hd.hoursUsed : 0) + ')">Set hours \u2014 ' + esc(cur) + '</button>';
+        });
       }
+      if (odo) h += '<div class="btn-grid" style="margin-top:10px">' + odo + '</div>';
       h += '<button class="btn-primary" onclick="stSave(\'' + esc(s.machine) + '\')">Save ' + esc(s.machine) + '</button>';
     } else {
       s.slots.forEach(function (sl) {
+        var note = (MATERIAL_SLOTS[sl.slot] && s.notes && s.notes[sl.slot] !== undefined && s.notes[sl.slot] !== '')
+          ? ' <span class="l2">\u00b7 ~' + esc(s.notes[sl.slot]) + ' ci remaining (note)</span>' : '';
         h += '<div class="k">' + (SLOT_LABELS[sl.slot] || sl.slot) + '</div><div>' +
-          (sl.value ? esc(sl.value) + (sl.at ? ' <span class="l2">\u00b7 confirmed ' + esc(sl.at) + (sl.by ? ' by ' + esc(sl.by) : '') + '</span>' : '')
-                    : '<span class="warn">unknown / empty</span>') + '</div>';
+          (sl.value ? esc(sl.value) + note : '<span class="warn">unknown / empty</span>') + '</div>';
       });
       if (s.modelLoadedStock !== null) {
         h += '<div class="pf-note">Loaded model material in stock: <b>' + s.modelLoadedStock + ' ci</b> \u00b7 ' +
           'loaded support in stock: <b>' + s.supportLoadedStock + ' ci</b> <span class="l2">(inventory remaining of the loaded materials)</span></div>';
       }
+      // one summary line per machine, replacing per-field stamps
+      if (s.lastUpdatedAt) {
+        h += '<div class="l2" style="margin-top:8px">Last updated ' + esc(s.lastUpdatedAt) +
+          (s.lastUpdatedBy ? ' by ' + esc(s.lastUpdatedBy) : '') + '</div>';
+      }
     }
     h += '</div>';
   });
   b.innerHTML = h;
+}
+/** re-filter the paired consumable dropdown and show/hide the ci note box */
+function stBayChanged(machine, slot) {
+  var mid = machine.replace(/\s/g, '_');
+  var box = document.getElementById('ci_' + mid + '_' + slot);
+  var v = stBayValue(machine, slot);
+  if (box) box.classList.toggle('hidden', !v);
+  Object.keys(SLOT_PAIR).forEach(function (cs) {
+    if (SLOT_PAIR[cs] !== slot) return;
+    var sel = document.getElementById('st_' + mid + '_' + cs);
+    if (!sel) return;
+    var keep = sel.value;
+    sel.innerHTML = stOptions(stChoicesFor(machine, cs), keep, true);
+  });
 }
 function stEdit(machine) {
   stEditing = stEditing === machine ? null : machine;
@@ -1895,9 +2009,15 @@ function stEdit(machine) {
 function stSave(machine) {
   var s = null;
   stCache.forEach(function (x) { if (x.machine === machine) s = x; });
+  var mid = machine.replace(/\s/g, '_');
   var updates = {};
   s.slots.forEach(function (sl) {
-    updates[sl.slot] = val('st_' + machine.replace(/\s/g, '_') + '_' + sl.slot);
+    updates[sl.slot] = val('st_' + mid + '_' + sl.slot);
+    if (MATERIAL_SLOTS[sl.slot]) {
+      var ci = document.getElementById('stci_' + mid + '_' + sl.slot);
+      // informational note only — never touches Inventory
+      if (ci) updates[sl.slot + 'Ci'] = updates[sl.slot] ? ci.value : '';
+    }
   });
   api('updateMachineState', { machine: machine, updates: updates, name: opName() })
     .then(function () { stEditing = null; toast(machine + ' updated'); openStatus(); })
@@ -1983,7 +2103,11 @@ function pfSteps() {
   ];
   if (pf.material) {
     if (pf.matRow && pf.matRow.supportOptions && pf.matRow.supportOptions.length) steps.push({ id: 'support', t: 'Support' });
-    steps.push({ id: 'tiphead', t: pfPlatform() === 'F900' ? 'Tips' : 'Head' });
+    // F370: the head stays with its material, so there is nothing to choose when
+    // continuing on what's already loaded — skip it, same rule as "Enough material?"
+    if (pfPlatform() === 'F900' || pfMatChanged()) {
+      steps.push({ id: 'tiphead', t: pfPlatform() === 'F900' ? 'Tips' : 'Head' });
+    }
     if (pfChangeNeeded()) {
       if (pfHighTemp() && pf.machine === 'F900') steps.push({ id: 'maint', t: 'Maintenance!' });
       steps.push({ id: 'change', t: 'Change material' });
@@ -2055,7 +2179,8 @@ function pfStepHtml(id) {
     case 'loadcmb':
       return '<div class="mi-block">' + (pf.machine === 'F900'
         ? 'Load the CMB file onto the <b>F900</b> and select the job on the machine.'
-        : 'Copy the CMB to a <b>USB drive</b> and load it on the <b>' + esc(pf.machine) + '</b> via the front USB port.') + '</div>' +
+        : 'Copy the CMB to a <b>USB drive</b> and load it on the <b>' + esc(pf.machine) + '</b> via the front USB port.') +
+        '<div class="pf-note">CMB is uploaded through Secure Print.</div></div>' +
         pfBtns('<button class="btn-primary" style="margin:0" onclick="pfDone()">CMB loaded</button>');
     case 'material': {
       // model materials only, in-inventory only; current-loaded shown at top with timestamps
