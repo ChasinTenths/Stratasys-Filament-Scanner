@@ -618,6 +618,30 @@ var handlingScan = false;     // decode results are ignored while a hit is being
 // on-screen lifecycle trace — the last three camera events are always visible
 // under the scan tools, so a failure report says exactly which path fired
 var camTrace = [];
+// The preview must fill its box no matter what html5-qrcode does to its own
+// elements across pause/resume (it re-sizes them with inline styles, which beat
+// a stylesheet). Inline styles set WITH the !important flag beat everything, so
+// they are asserted here and re-asserted on a slow timer while the camera lives.
+var previewGuard = null;
+function enforcePreviewSize_() {
+  var host = document.getElementById('reader');
+  if (!host) return;
+  var els = host.querySelectorAll('video, canvas');
+  for (var i = 0; i < els.length; i++) {
+    var s = els[i].style;
+    [['position', 'absolute'], ['top', '0'], ['left', '0'],
+     ['width', '100%'], ['height', '100%'], ['object-fit', 'cover']].forEach(function (kv) {
+      if (s.getPropertyValue(kv[0]) !== kv[1] || s.getPropertyPriority(kv[0]) !== 'important') {
+        s.setProperty(kv[0], kv[1], 'important');
+      }
+    });
+  }
+}
+function startPreviewGuard_() {
+  clearInterval(previewGuard);
+  enforcePreviewSize_();
+  previewGuard = setInterval(enforcePreviewSize_, 800);
+}
 function trace(ev) {
   camTrace.push(ev);
   if (camTrace.length > 3) camTrace.shift();
@@ -645,6 +669,7 @@ function hardRestartCamera() {
  */
 function hardStopCamera_() {
   trace('hard-stop');
+  clearInterval(previewGuard); previewGuard = null;
   var inst = scanner;
   scanner = null;
   camState = 'idle';
@@ -727,6 +752,7 @@ function reallyStartCamera_() {
     trace('started');
     hint('Materials in inventory just need SN');
     setupTorch();
+    startPreviewGuard_();
     cameraHealthCheck_();
   }).catch(function (e) {
     camState = 'idle'; scanner = null; trace('start-fail');
@@ -763,6 +789,7 @@ function resumeCamera_() {
     scanner.resume();
     camState = 'running';
     trace('resumed');
+    enforcePreviewSize_();
   } catch (e) {
     trace('resume-threw');
     hardRestartCamera();
