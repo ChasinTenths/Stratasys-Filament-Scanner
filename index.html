@@ -53,10 +53,10 @@
   .hidden { display: none !important; }
 
   /* scanner — capped height so the whole page fits one phone viewport */
-  #reader { border-radius: 10px; overflow: hidden; background: #000; }
-  #reader video { border-radius: 10px; width: 100% !important; height: auto !important;
-    max-height: 38vh; object-fit: cover; }
-  #reader canvas { max-height: 38vh; }
+  #reader { border-radius: 10px; overflow: hidden; background: #000;
+    position: relative; width: 100%; aspect-ratio: 4 / 3; max-height: 38vh; }
+  #reader video, #reader canvas { position: absolute; inset: 0;
+    width: 100% !important; height: 100% !important; object-fit: cover; border-radius: 10px; }
   .flash #reader { outline: 3px solid var(--ok); outline-offset: 2px; }
   .chips { display: flex; gap: 6px; margin-top: 8px; }
   .chip { flex: 1; text-align: center; font: 600 11px var(--mono); padding: 6px 0;
@@ -195,7 +195,7 @@
 <div class="wrap" id="wrap">
 
   <header>
-    <h1 id="appTitle">Forge Stratasys Tracker</h1>
+    <h1 id="appTitle">Forge Stratasys Tracker · <span style="color:var(--accent)">v8.1</span></h1>
     <div class="hdr-right">
       <div class="pill q hidden" id="queuePill" onclick="flushQueue()">0 queued</div>
       <div class="counter" id="counter" onclick="toggleSession(true)">0</div>
@@ -239,6 +239,7 @@
       <button class="btn-ghost" onclick="restartCamera()">Restart cam</button>
     </div>
     <div class="scanhint" id="scanHint">Materials in inventory just need SN</div>
+    <div class="scanhint" id="camDiag" style="opacity:.65; font-family:var(--mono); font-size:11px"></div>
     <div class="unknown hidden" id="unknownBox">
       <b>Unrecognized barcode</b> — doesn't match SN / Lot / P/N patterns:
       <code id="unknownVal"></code>
@@ -615,6 +616,15 @@ function feedback() {
 var cameraGranted = false;
 var camState = 'idle';        // 'idle' | 'starting' | 'running' | 'paused'
 var handlingScan = false;     // decode results are ignored while a hit is being processed
+// on-screen lifecycle trace — the last three camera events are always visible
+// under the scan tools, so a failure report says exactly which path fired
+var camTrace = [];
+function trace(ev) {
+  camTrace.push(ev);
+  if (camTrace.length > 3) camTrace.shift();
+  var d = document.getElementById('camDiag');
+  if (d) d.textContent = 'cam: ' + camTrace.join(' \u2192 ');
+}
 
 function userStartCamera() {
   initAudio();          // audio must be unlocked by a user gesture on iOS
@@ -635,6 +645,7 @@ function hardRestartCamera() {
  * so the camera hardware is ALWAYS released no matter what the library does.
  */
 function hardStopCamera_() {
+  trace('hard-stop');
   var inst = scanner;
   scanner = null;
   camState = 'idle';
@@ -714,11 +725,13 @@ function reallyStartCamera_() {
     function () {}
   ).then(function () {
     camState = 'running'; cameraGranted = true;
+    trace('started');
     hint('Materials in inventory just need SN');
     setupTorch();
     cameraHealthCheck_();
   }).catch(function (e) {
-    camState = 'idle'; scanner = null; camFailed_(e);
+    camState = 'idle'; scanner = null; trace('start-fail');
+    camFailed_(e);
   });
 }
 
@@ -739,17 +752,20 @@ function pauseCamera_() {
   camState = 'paused';
   setTimeout(function () {
     if (camState !== 'paused' || !scanner) return;
-    try { scanner.pause(true); } catch (e) { /* stopped elsewhere in the meantime */ }
+    try { scanner.pause(true); trace('paused'); }
+    catch (e) { trace('pause-threw'); }
   }, 0);
 }
 
 /** Un-freezes for the next box. Falls back to a full hard restart on any doubt. */
 function resumeCamera_() {
-  if (!scanner) { reallyStartCamera_(); return; }
+  if (!scanner) { trace('resume-noinst'); reallyStartCamera_(); return; }
   try {
     scanner.resume();
     camState = 'running';
+    trace('resumed');
   } catch (e) {
+    trace('resume-threw');
     hardRestartCamera();
     return;
   }
@@ -762,14 +778,19 @@ function cameraHealthCheck_() {
     if (camState !== 'running') return;
     var host = document.getElementById('reader');
     var v = host && host.querySelector('video');
-    var live = false;
+    var why = '';
     try {
-      live = !!(v && v.videoWidth > 0 && v.srcObject &&
-        v.srcObject.getVideoTracks().some(function (t) { return t.readyState === 'live'; }));
-    } catch (e) {}
-    if (!live) {
+      if (!v) why = 'no-video';
+      else if (v.paused) why = 'video-paused';
+      else if (!(v.videoWidth > 0)) why = 'no-frames';
+      else if (!v.srcObject || !v.srcObject.getVideoTracks().some(function (t) { return t.readyState === 'live'; })) why = 'track-dead';
+    } catch (e) { why = 'check-err'; }
+    if (why) {
+      trace('unhealthy:' + why);
       hint('Camera stream died \u2014 restarting\u2026');
       hardRestartCamera();
+    } else {
+      trace('healthy');
     }
   }, 700);
 }
