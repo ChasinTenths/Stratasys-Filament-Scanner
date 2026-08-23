@@ -1,6 +1,10 @@
 <!-- Forge Stratasys Material Tracker — scanner UI. Hosted on GitHub Pages.
-     Talks to Google Apps Script via POST fetch to the /exec URL (stored in localStorage).
-     Bodies are sent as text/plain to avoid CORS preflight, which Apps Script cannot answer. -->
+     Talks to Google Apps Script via POST fetch to the /exec URL.
+     Bodies are sent as text/plain to avoid CORS preflight, which Apps Script cannot answer.
+
+     ITERATION 7: Post-Job Closeout, its photo attachments, and unexpected-stop
+     reporting are removed. The camera lifecycle is a real state machine (see the
+     comment above startScanner) — that is the fix for the scan-once-then-dead bug. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -10,7 +14,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#101418">
 <link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon-512.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <title>Forge Stratasys Tracker</title>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <style>
@@ -200,7 +204,6 @@
     <button class="btn-caution" onclick="undoLast()">Undo</button>
   </div>
 
-  <!-- ============================== SCANNER ============================== -->
   <!-- ============================== HUB ============================== -->
   <div class="card" id="hubCard">
     <div class="hub-primary">
@@ -215,10 +218,10 @@
       <button class="btn-ghost" onclick="withName(function(){openUpkeep('mnt')})">Perform Maintenance</button>
       <button class="btn-ghost" onclick="openHowTo('vid')">How-to videos/guides</button>
       <button class="btn-ghost" onclick="openStatus()">Printer Status</button>
-      <button class="btn-ghost" onclick="openCloseout(null)">Post-Job Closeout</button>
     </div>
   </div>
 
+  <!-- ============================== SCANNER ============================== -->
   <div class="card hidden" id="scanCard">
     <button class="btn-primary" id="btnStartCam" onclick="userStartCamera()" style="margin:0 0 8px">Start camera</button>
     <div id="reader"></div>
@@ -230,6 +233,7 @@
     <div class="scan-tools">
       <button class="btn-ghost hidden" id="btnTorch" onclick="toggleTorch()">Flash</button>
       <button class="btn-ghost" onclick="resetBuffer()">Reset codes</button>
+      <button class="btn-ghost" onclick="restartCamera()">Restart cam</button>
     </div>
     <div class="scanhint" id="scanHint">Materials in inventory just need SN</div>
     <div class="unknown hidden" id="unknownBox">
@@ -412,15 +416,6 @@
   <div id="pfBody"></div>
 </div>
 
-<!-- post-job closeout -->
-<div id="closeModal" class="modal hidden">
-  <header style="display:flex; justify-content:space-between; align-items:center">
-    <h1>Post-job closeout</h1>
-    <button class="btn-ghost" style="padding:8px 16px" onclick="hide('closeModal')" data-nolock>Close</button>
-  </header>
-  <div id="closeBody"></div>
-</div>
-
 
 <script>
 // ============================================================ constants / storage keys
@@ -435,7 +430,6 @@ var catalog = {};              // pn -> catalog entry
 var buffer = { sn: null, lot: null, pn: null };
 var current = null;            // { sn, lot, pn, cat, last, offline, manual }
 var scanner = null;
-var scanning = false;
 var lockedSN = null;           // SN just written — ignored until a different box appears
 var lockedBox = null;          // all three codes of the completed box
 var cooldownUntil = 0;
@@ -468,7 +462,7 @@ function execUrl() {
 // change it by design. Update the constant and redeploy the page if it ever moves.
 function api(action, params, timeoutMs) {
   var url = execUrl();
-  if (!url) return Promise.reject(new Error('No /exec URL configured. Tap the title to set it.'));
+  if (!url) return Promise.reject(new Error('No /exec URL configured.'));
   var ctrl = new AbortController();
   var t = setTimeout(function () { ctrl.abort(); }, timeoutMs || READ_TIMEOUT_MS);
   var body = JSON.stringify(Object.assign({ action: action }, params || {}));
@@ -528,10 +522,6 @@ window.addEventListener('load', function () {
   updateQueuePill();
   flushQueue();
   window.addEventListener('online', flushQueue);
-
-  // deep link: the machine QR stickers and the done-notification email land here
-  var m = location.search.match(/[?&]closeout(?:=([^&]+))?/);
-  if (m) setTimeout(function () { openCloseout(m[1] ? decodeURIComponent(m[1]) : null); }, 400);
 });
 
 /**
@@ -596,13 +586,39 @@ function feedback() {
 }
 
 // ============================================================ scanner
+// ITERATION 7 — the camera lifecycle is one explicit state machine:
+//   'idle' | 'starting' | 'running' | 'stopping'
+// The previous version tracked it with two booleans plus a `stopPromise` that was
+// set on every stop but never cleared once that stop settled. html5-qrcode's
+// stop() can hang on iOS when its host element is hidden during teardown — which
+// is exactly what allCodesCollected() does. A hung stop() left that promise
+// pending forever and every later startScanner() parked behind it: one scan, then
+// a dead camera until the page was reloaded. Now a stop ALWAYS returns the
+// machine to 'idle', watchdog-forced if html5-qrcode never comes back.
 var cameraGranted = false;
+var camState = 'idle';
+var restartQueued = false;
+var stopSettleGuard = null;
+var stopPromise_ = null;
 
 function userStartCamera() {
   initAudio();          // audio must be unlocked by a user gesture on iOS
-  hide('btnStartCam');
-  startScanner();
+  restartCamera();
 }
+
+/** Escape hatch on the scan card — a wedged camera never needs an app restart. */
+function restartCamera() {
+  restartQueued = false;
+  stopScanner().then(function () { reallyStartCamera_(); });
+}
+
+// iOS suspends the camera when the tab is backgrounded or a system prompt appears.
+// Coming back to a dead stream used to look identical to the wedge bug.
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) return;
+  var scanVisible = !document.getElementById('scanCard').classList.contains('hidden');
+  if (scanVisible && camState === 'idle' && cameraGranted) reallyStartCamera_();
+});
 
 function goHome() {
   var cp = document.getElementById('countPill'); if (cp) cp.classList.add('hidden');
@@ -619,25 +635,26 @@ function openScannerScreen() {
 function startScanner() {
   show('scanCard'); hide('canisterCard'); hide('unknownPnCard');
   resetBuffer();
-  if (scanning || starting) return;
-  // wait out any in-flight stop() — constructing a second Html5Qrcode against the
-  // same element while the first is tearing down kills the camera until a reload
-  if (stopPromise) {
-    var p = stopPromise;
-    stopPromise = null;
-    p.then(function () { startScanner(); }).catch(function () { startScanner(); });
-    return;
-  }
-  starting = true;
+  if (camState === 'running' || camState === 'starting') return;
+  if (camState === 'stopping') { restartQueued = true; return; }   // resumed by the stop's settle()
+  reallyStartCamera_();
+}
+
+function reallyStartCamera_() {
+  camState = 'starting';
+  hide('btnStartCam');
   var host = document.getElementById('reader');
-  if (host && host.querySelector('video')) host.innerHTML = '';   // clear any orphaned video
-  scanner = new Html5Qrcode('reader', {
-    formatsToSupport: [Html5QrcodeSupportedFormats.CODE_128],
-    // native BarcodeDetector where the browser has it (Android Chrome):
-    // hardware-accelerated, far faster than the JS decoder
-    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-    verbose: false
-  });
+  if (host) host.innerHTML = '';   // always begin from a clean element
+  try {
+    scanner = new Html5Qrcode('reader', {
+      formatsToSupport: [Html5QrcodeSupportedFormats.CODE_128],
+      // native BarcodeDetector where the browser has it (Android Chrome):
+      // hardware-accelerated, far faster than the JS decoder
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      verbose: false
+    });
+  } catch (e) { camState = 'idle'; scanner = null; camFailed_(e); return; }
+
   scanner.start(
     { facingMode: 'environment' },
     {
@@ -656,17 +673,19 @@ function startScanner() {
     onDecode,
     function () {}
   ).then(function () {
-    starting = false;
-    scanning = true; cameraGranted = true;
+    camState = 'running'; cameraGranted = true;
+    hint('Materials in inventory just need SN');
     setupTorch();
   }).catch(function (e) {
-    starting = false;
-    scanning = false; scanner = null;
-    hint('Camera blocked. In Safari: tap aA in the address bar → Website Settings → Camera → Allow, then retry. (' + e + ')');
-    var b = document.getElementById('btnStartCam');
-    b.textContent = 'Retry camera';
-    show('btnStartCam');
+    camState = 'idle'; scanner = null; camFailed_(e);
   });
+}
+
+function camFailed_(e) {
+  hint('Camera did not start. Tap "Restart camera". If it keeps failing: Safari \u2192 aA \u2192 Website Settings \u2192 Camera \u2192 Allow. (' + e + ')');
+  var b = document.getElementById('btnStartCam');
+  b.textContent = 'Restart camera';
+  show('btnStartCam');
 }
 
 function setupTorch() {
@@ -679,7 +698,7 @@ function setupTorch() {
   } catch (e) { hide('btnTorch'); }
 }
 function toggleTorch() {
-  if (!scanner || !scanning) return;
+  if (!scanner || camState !== 'running') return;
   var want = !torchOn;
   scanner.applyVideoConstraints({ advanced: [{ torch: want }] })
     .then(function () {
@@ -689,14 +708,34 @@ function toggleTorch() {
     .catch(function () { hint('Torch not supported on this camera.'); hide('btnTorch'); });
 }
 
-var starting = false;      // a start() is in flight
-var stopPromise = null;    // a stop()/clear() is in flight
+/**
+ * Tears the camera down and ALWAYS returns the state machine to 'idle' — even if
+ * html5-qrcode's stop() never settles. That guarantee is the actual fix for the
+ * scan-once-then-dead regression; a 1.2 s watchdog force-settles a hung stop.
+ */
 function stopScanner() {
-  if (!scanning || !scanner) return Promise.resolve();
-  scanning = false; torchOn = false;
-  stopPromise = scanner.stop().then(function () { scanner.clear(); scanner = null; })
-    .catch(function () { scanner = null; });
-  return stopPromise;
+  if (camState === 'stopping') return stopPromise_ || Promise.resolve();
+  if (!scanner) { camState = 'idle'; return Promise.resolve(); }
+  camState = 'stopping';
+  torchOn = false;
+  var inst = scanner;
+  scanner = null;                    // no other code can touch the dying instance
+  var settled = false;
+  var settle = function () {
+    if (settled) return;
+    settled = true;
+    clearTimeout(stopSettleGuard);
+    try { inst.clear(); } catch (e) {}
+    var host = document.getElementById('reader');
+    if (host) host.innerHTML = '';
+    camState = 'idle';
+    if (restartQueued) { restartQueued = false; setTimeout(reallyStartCamera_, 0); }
+  };
+  stopSettleGuard = setTimeout(settle, 1200);
+  var p;
+  try { p = inst.stop(); } catch (e) { p = Promise.reject(e); }
+  stopPromise_ = Promise.resolve(p).catch(function () {}).then(settle);
+  return stopPromise_;
 }
 
 function onDecode(text) {
@@ -753,9 +792,9 @@ function tryFastPath(sn) {
   hint('SN captured — checking system…');
   api('lookupCanister', { sn: sn })
     .then(function (last) {
-      if (fastPathSN !== sn) return;   // superseded by a different SN
+      if (fastPathSN !== sn) return;         // superseded by a different SN
       fastPathSN = null;
-      if (!scanning) return;           // full three-code path already advanced
+      if (camState !== 'running') return;    // full three-code path already advanced
       if (!last) { hint('New canister — also scan the Lot and P/N barcodes.'); return; }
 
       var cat = catalog[last.pn];
@@ -775,7 +814,7 @@ function tryFastPath(sn) {
     })
     .catch(function () {
       // offline or error — quietly fall back to the full three-barcode path
-      if (fastPathSN === sn) { fastPathSN = null; if (scanning) hint('Scan all three barcodes.'); }
+      if (fastPathSN === sn) { fastPathSN = null; if (camState === 'running') hint('Scan all three barcodes.'); }
     });
 }
 
@@ -1688,13 +1727,8 @@ function renderUpkeep() {
     h += '<div class="cautionbox hidden" id="vacNote" style="margin-top:10px">Don\u2019t use bristle attachments if the printer is hot.</div>';
     h += '<label>Note (optional)</label><input id="upkNote">';
     h += '<button class="btn-primary" onclick="submitUpkeep()">Log maintenance</button>';
-    if (upkCache.maintenance.length) {
-      h += '<div class="mi-block" style="margin-top:14px"><div class="k">Recent maintenance</div>';
-      upkCache.maintenance.forEach(function (m) {
-        h += '<div class="l2">' + esc(m.date) + ' · ' + esc(m.machine) + ' · ' + esc(m.type) + ' — ' + esc(m.name) + '</div>';
-      });
-      h += '</div>';
-    }
+    // ITERATION 7: scoped to the machine selected above, painted by paintLastMnt
+    h += '<div id="lastMnt" class="mi-block" style="margin-top:14px"></div>';
   }
   b.innerHTML = h;
   if (upkMode === 'mnt') {
@@ -1720,11 +1754,13 @@ function paintCalMaterials() {
 function paintLastCal(machine) {
   var box = document.getElementById('lastCal');
   if (!box) return;
-  // only the most recent calibration for the machine currently selected
+  // only the most recent calibration for the machine currently selected.
+  // Compared on the server's numeric `ms` — the old string compare on
+  // 'dd MMM yyyy' sorted by day-of-month and picked the wrong row.
   var latest = null;
   (upkCache.calibrations || []).forEach(function (c) {
     if (c.machine !== machine) return;
-    if (!latest || String(c.date) > String(latest.date)) latest = c;
+    if (!latest || Number(c.ms || 0) > Number(latest.ms || 0)) latest = c;
   });
   box.innerHTML = latest
     ? '<div class="k">Last calibrated \u2014 ' + esc(machine) + '</div><div>' + esc(latest.material) +
@@ -1746,6 +1782,18 @@ function paintMaintTypes() {
       esc(it.t) + '</label>';
   }).join('');
   maintVacCheck();
+  paintLastMnt(machine);
+}
+function paintLastMnt(machine) {
+  var box = document.getElementById('lastMnt');
+  if (!box) return;
+  // only the single most recent entry for the machine selected above — same
+  // scoping rule the calibration panel uses
+  var m = (upkCache.maintenanceLatest || {})[machine] || null;
+  box.innerHTML = '<div class="k">Last maintenance \u2014 ' + esc(machine) + '</div>' +
+    (m ? '<div>' + esc(m.type) + '<div class="l2">' + esc(m.date) + ' by ' + esc(m.name) +
+         (m.note ? ' \u00b7 ' + esc(m.note) : '') + '</div></div>'
+       : '<div class="l2">No maintenance on record for this machine.</div>');
 }
 function maintVacCheck() {
   // conditional note: F900 only, and only when a vacuum-related item is checked
@@ -2339,7 +2387,7 @@ function pfStepHtml(id) {
           .filter(Boolean).join(' \u00b7 ') + '</div>' +
         (pf.trackEmail ? '<div class="l2">Job tracking email \u2192 ' + esc(pf.trackEmail) + '</div>' : '') + '</div>' +
         '<label style="display:flex; gap:10px; align-items:center; text-transform:none; font-size:14.5px; color:var(--text)">' +
-        '<input type="checkbox" id="pfNotify" style="width:20px; height:20px" checked> Email me when the print should be done (with a closeout link)</label>' +
+        '<input type="checkbox" id="pfNotify" style="width:20px; height:20px" checked> Email me when the print should be done</label>' +
         '<input id="pfNotifyEmail" placeholder="notify email" value="' + esc(em) + '" style="margin-top:8px">' +
         '<button class="btn-primary" onclick="pfStart(this)">Start print \u2014 press GO on the machine</button>';
       return h6;
@@ -2478,141 +2526,6 @@ function pfStart(btn) {
     if (btn) { btn.classList.remove('done-flash'); btn.textContent = 'Start print \u2014 press GO on the machine'; unlockButton(btn); }
     alert(e.message);
   });
-}
-
-// ============================================================ post-job closeout (iteration 5)
-var co = null;
-function openCloseout(jobId) {
-  show('closeModal');
-  var b = document.getElementById('closeBody');
-  b.textContent = 'Loading\u2026';
-  api('getOpenJobs').then(function (jobs) {
-    if (!jobs.length) { b.innerHTML = '<div class="mi-block">No open jobs. Every started print has been closed out.</div>'; return; }
-    var job = null;
-    jobs.forEach(function (j) { if (j.jobId === jobId) job = j; });
-    if (!job && jobs.length === 1) job = jobs[0];
-    if (!job) {
-      b.innerHTML = '<label>Which job?</label>' + jobs.map(function (j) {
-        return '<div class="lrow"><div class="l1"><b>' + esc(j.jobName || j.material) + '</b><span class="l2">' + esc(j.machine) + '</span></div>' +
-          '<div class="l2">started ' + esc(j.at) + ' by ' + esc(j.by) + '</div>' +
-          '<div class="btn-grid" style="margin-top:6px">' +
-          '<button class="btn-ghost" style="padding:8px" onclick="openCloseout(\'' + j.jobId + '\')">Close out</button>' +
-          '<button class="btn-danger" style="padding:8px" onclick="reportStopPrompt(\'' + j.jobId + '\')">Report unexpected stop</button>' +
-          '</div></div>';
-      }).join('');
-      return;
-    }
-    co = { job: job, soluble: false };
-    api('getMaterialInfo').then(function (mi) {
-      mi.forEach(function (r) { if (normEq(r.material, job.material) && (r.platform === (job.machine === 'F900' ? 'F900' : 'F370'))) co.soluble = r.soluble; });
-      renderCloseout();
-    }).catch(function () { renderCloseout(); });
-  }).catch(function (e) { b.textContent = 'Could not load: ' + e.message; });
-}
-function reportStopPrompt(jobId) {
-  var reason = prompt('Reason the printer was stopped early (required):');
-  if (!reason) return;
-  api('reportStop', { jobId: jobId, reason: reason, name: opName() })
-    .then(function (r) { toast('Stop reported' + (r.emailed ? ' \u2014 the job starter has been emailed' : '')); openCloseout(null); })
-    .catch(function (e) { alert(e.message); });
-}
-function renderCloseout() {
-  var j = co.job;
-  var b = document.getElementById('closeBody');
-  var h = '<div class="mi-block"><b style="font-size:16.5px">' + esc(j.jobName || j.material) + '</b>' +
-    '<div class="l2">' + esc(j.machine) + ' \u00b7 ' + esc(j.material) + ' \u00b7 started ' + esc(j.at) + ' by ' + esc(j.by) + ' \u00b7 expected ' + fmtDur(j.expectedHours) + '</div></div>';
-  // usage comes forward from the Job Tracking step — never re-asked here (iteration 6)
-  h += '<div class="pf-note">Material used: <b>' + (j.modelUsage === null ? '\u2014' : j.modelUsage + ' ci model') +
-    (j.supportUsage === null ? '' : ' \u00b7 ' + j.supportUsage + ' ci support') + '</b> <span class="l2">(from job start)</span></div>';
-  h += '<div class="pf-note">Also log the canister/spool\u2019s new remaining volume with a normal scan, and update the material log on the box' + (j.machine === 'F900' ? ' and the F900 canister log' : '') + '.</div>';
-  if (j.machine === 'F900' && j.tipHead) {
-    h += '<label>Tip odometer now (' + esc(j.tipHead) + ') \u2014 blank to skip</label><input id="coTip" type="number" inputmode="decimal">';
-  }
-  if (co.soluble) {
-    h += '<label>Time part was placed into the ultrasonic tank</label><input id="coUltra" type="time">';
-  }
-  h += '<label style="display:flex; gap:10px; align-items:center; text-transform:none; font-size:14.5px; color:var(--text); margin-top:12px">' +
-    '<input type="checkbox" id="coSheetOut" style="width:20px; height:20px"> Build sheet/tray thrown out (removes one from Used' + (j.sheet && j.sheet.indexOf('(reusing') === -1 ? ': ' + esc(SHEET_LABELS[j.sheet] || j.sheet) : '') + ')</label>';
-  if (j.trackEmail) {
-    h += '<div class="pf-note">Job tracking email: <b>' + esc(j.trackEmail) + '</b> (carried over \u2014 not asked again)</div>' +
-      '<input type="hidden" id="coJams" value="' + esc(j.trackEmail) + '">';
-  } else {
-    h += '<label>Job tracking email \u2014 blank to skip</label><input id="coJams" placeholder="email for job tracking info" value="' + esc(localStorage.getItem('forgeJamsEmail') || '') + '">';
-  }
-  h += '<div class="tappable" style="border:1px dashed var(--line); border-radius:10px; padding:18px; text-align:center; margin-top:12px; font-size:15px" onclick="document.getElementById(\'coPhoto\').click()">\ud83d\udcf7 Attach photos of the finished print (up to 5, optional)</div>';
-  h += '<input type="file" id="coPhoto" accept="image/*" multiple style="display:none" onchange="coPhotoCount(this)"><div class="l2" id="coPhotoName" style="text-align:center; margin-top:4px"></div>';
-  h += '<button class="btn-primary" onclick="submitCloseout(false)">Finish closeout</button>';
-  h += '<button class="btn-cancel" onclick="submitCloseout(true)">Skip closeout</button>';
-  h += '<button class="btn-danger" style="width:100%; margin-top:8px" onclick="reportStopPrompt(\'' + j.jobId + '\')">Report unexpected stop</button>';
-  b.innerHTML = h;
-}
-function coPhotoCount(input) {
-  var n = Math.min(input.files.length, 5);
-  setText('coPhotoName', n ? n + ' photo' + (n === 1 ? '' : 's') + ' attached' : '');
-}
-function submitCloseout(skipped) {
-  var j = co.job;
-  var usage = '';   // backend falls back to the usage entered at job start
-  var finish = function () {
-    api('closeJob', { jobId: j.jobId, usage: usage, ultrasonicTime: (document.getElementById('coUltra') ? val('coUltra') : ''), skipped: skipped, name: opName(), note: '' })
-      .then(function (r) {
-        var jamsTo = skipped ? '' : val('coJams').trim();
-        var next = function () {
-          if (r.cost && !skipped) {
-            var c = r.cost;
-            var lines = ['Estimated job cost: $' + c.total,
-              '\u2022 Material: ' + (c.material === null ? 'n/a \u2014 ' + c.note : '$' + c.material)];
-            if (c.support !== null) lines.push('\u2022 Support: $' + c.support);
-            if (c.sheet !== null || c.sheetNote) lines.push('\u2022 Sheet share: ' + (c.sheet !== null ? '$' + c.sheet + ' (' + c.sheetNote + ')' : c.sheetNote));
-            lines.push('\u2022 Consumable wear: ' + (c.wear === null ? 'n/a' : '$' + c.wear + ' (' + c.wearNote + ')'));
-            alert(lines.join('\n'));
-          }
-          hide('closeModal');
-          toast(skipped ? 'Closeout skipped' : 'Job closed');
-        };
-        if (jamsTo) {
-          var files = Array.prototype.slice.call(document.getElementById('coPhoto').files || []).slice(0, 5);
-          if (files.length) {
-            shrinkPhotos(files, function (b64s) {
-              api('sendJobEmail', { jobId: j.jobId, to: jamsTo, photoBase64: b64s[0], photosBase64: b64s, name: opName() }).then(next).catch(function (e) { alert('Job tracking email failed: ' + e.message); next(); });
-            });
-          } else {
-            api('sendJobEmail', { jobId: j.jobId, to: jamsTo, name: opName() }).then(next).catch(function (e) { alert('Job tracking email failed: ' + e.message); next(); });
-          }
-        } else next();
-      })
-      .catch(function (e) { alert(e.message); });
-  };
-  var tipVal = document.getElementById('coTip') ? val('coTip') : '';
-  var sheetOut = document.getElementById('coSheetOut').checked;
-  var chain = Promise.resolve();
-  if (!skipped && tipVal !== '' && j.tipHead) {
-    chain = chain.then(function () { return api('logTipReading', { tipId: j.tipHead, reading: Number(tipVal), name: opName(), note: 'closeout ' + j.jobId }); })
-      .then(function (r) { if (r.flagged) alert('\u26a0 Tip reading went backward vs ' + r.previous + ' \u2014 check which tip is installed.'); })
-      .catch(function (e) { alert('Tip reading failed: ' + e.message); });
-  }
-  if (!skipped && sheetOut && j.sheet && j.sheet.indexOf('(reusing') === -1) {
-    chain = chain.then(function () { return api('sheetAction', { type: j.sheet, act: 'discardUsed', qty: 1, name: opName(), note: 'closeout ' + j.jobId }); })
-      .catch(function (e) { alert('Sheet discard failed: ' + e.message); });
-  }
-  chain.then(finish);
-}
-function shrinkPhotos(files, cb) {
-  var out = [];
-  var one = function (i) {
-    if (i >= files.length) return cb(out);
-    var img = new Image();
-    img.onload = function () {
-      var max = 1280, sc = Math.min(1, max / Math.max(img.width, img.height));
-      var cv = document.createElement('canvas');
-      cv.width = Math.round(img.width * sc); cv.height = Math.round(img.height * sc);
-      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-      out.push(cv.toDataURL('image/jpeg', 0.8).split(',')[1]);
-      one(i + 1);
-    };
-    img.src = URL.createObjectURL(files[i]);
-  };
-  one(0);
 }
 
 // ============================================================ tiny utils
