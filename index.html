@@ -2,9 +2,11 @@
      Talks to Google Apps Script via POST fetch to the /exec URL.
      Bodies are sent as text/plain to avoid CORS preflight, which Apps Script cannot answer.
 
-     ITERATION 7: Post-Job Closeout, its photo attachments, and unexpected-stop
-     reporting are removed. The camera lifecycle is a real state machine (see the
-     comment above startScanner) — that is the fix for the scan-once-then-dead bug. -->
+     ITERATION 8: the camera is never torn down between scans any more. A hit
+     freezes the live session with pause(true); the next box resumes it. Full
+     teardown (with the MediaStream tracks stopped directly, never trusting the
+     library's stop() promise) happens only when leaving the scan screen.
+     See the comment block above the scanner section for the full diagnosis. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,6 +17,7 @@
 <meta name="theme-color" content="#101418">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
 <title>Forge Stratasys Tracker</title>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <style>
@@ -586,43 +589,78 @@ function feedback() {
 }
 
 // ============================================================ scanner
-// ITERATION 7 — the camera lifecycle is one explicit state machine:
-//   'idle' | 'starting' | 'running' | 'stopping'
-// The previous version tracked it with two booleans plus a `stopPromise` that was
-// set on every stop but never cleared once that stop settled. html5-qrcode's
-// stop() can hang on iOS when its host element is hidden during teardown — which
-// is exactly what allCodesCollected() does. A hung stop() left that promise
-// pending forever and every later startScanner() parked behind it: one scan, then
-// a dead camera until the page was reloaded. Now a stop ALWAYS returns the
-// machine to 'idle', watchdog-forced if html5-qrcode never comes back.
+// ITERATION 8 — strategy change, based on the new shrinking-preview symptom.
+//
+// Iterations 5–7 all tore the camera down after every scan and rebuilt it for
+// the next box. Two iOS realities make that unfixable in place:
+//   1. html5-qrcode's stop() can hang when invoked from (or right after) its own
+//      decode callback — so any design that must WAIT for a stop can wedge.
+//   2. Iteration 7's watchdog stopped waiting — but it purged the DOM without
+//      stopping the MediaStream tracks. The old stream stayed live, and the next
+//      getUserMedia was issued on top of it. iOS resolves that conflict by
+//      handing back a degraded capture session: a visibly SMALLER preview that
+//      delivers no usable frames. That is exactly the iteration-8 symptom pair
+//      (shrunken preview + no second scan).
+//
+// So: the camera is now NEVER torn down between scans.
+//   scan hit  → scanner.pause(true)   — synchronous freeze, stream stays alive
+//   next box  → scanner.resume()      — no teardown, no getUserMedia, no resize
+//
+// A full stop happens only on leaving the scan screen — and that stop never
+// trusts the library: the MediaStream tracks are stopped directly off the
+// <video> element first, so a hung library promise can no longer strand a live
+// stream. After every start/resume a health check confirms frames are actually
+// flowing (videoWidth > 0, a track in readyState 'live') and hard-restarts if
+// iOS silently killed the stream while the page was hidden.
 var cameraGranted = false;
-var camState = 'idle';
-var restartQueued = false;
-var stopSettleGuard = null;
-var stopPromise_ = null;
+var camState = 'idle';        // 'idle' | 'starting' | 'running' | 'paused'
+var handlingScan = false;     // decode results are ignored while a hit is being processed
 
 function userStartCamera() {
   initAudio();          // audio must be unlocked by a user gesture on iOS
-  restartCamera();
+  hardRestartCamera();
 }
 
 /** Escape hatch on the scan card — a wedged camera never needs an app restart. */
-function restartCamera() {
-  restartQueued = false;
-  stopScanner().then(function () { reallyStartCamera_(); });
+function restartCamera() { hardRestartCamera(); }
+
+function hardRestartCamera() {
+  hardStopCamera_();
+  reallyStartCamera_();
 }
 
-// iOS suspends the camera when the tab is backgrounded or a system prompt appears.
-// Coming back to a dead stream used to look identical to the wedge bug.
+/**
+ * Guaranteed teardown. Never awaits the library's stop() promise — it can hang
+ * on iOS. The stream's tracks are stopped directly, then the element is purged,
+ * so the camera hardware is ALWAYS released no matter what the library does.
+ */
+function hardStopCamera_() {
+  var inst = scanner;
+  scanner = null;
+  camState = 'idle';
+  torchOn = false;
+  var host = document.getElementById('reader');
+  try {
+    var v = host && host.querySelector('video');
+    if (v && v.srcObject) v.srcObject.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+  } catch (e) {}
+  if (inst) { try { inst.stop().catch(function () {}); } catch (e) {} }   // best-effort, never awaited
+  if (host) host.innerHTML = '';
+}
+
+// iOS suspends or kills the camera when the tab is backgrounded or a system
+// prompt appears. On return, restart or health-check as appropriate.
 document.addEventListener('visibilitychange', function () {
   if (document.hidden) return;
   var scanVisible = !document.getElementById('scanCard').classList.contains('hidden');
-  if (scanVisible && camState === 'idle' && cameraGranted) reallyStartCamera_();
+  if (!scanVisible || !cameraGranted) return;
+  if (camState === 'idle') { reallyStartCamera_(); return; }
+  if (camState === 'running') cameraHealthCheck_();
 });
 
 function goHome() {
   var cp = document.getElementById('countPill'); if (cp) cp.classList.add('hidden');
-  stopScanner();
+  hardStopCamera_();
   ['scanCard', 'canisterCard', 'unknownPnCard'].forEach(hide);
   show('hubCard');
 }
@@ -632,11 +670,13 @@ function openScannerScreen() {
   startScanner();
 }
 
+/** Entering or re-arming the scan screen. Resumes the live session if one exists. */
 function startScanner() {
   show('scanCard'); hide('canisterCard'); hide('unknownPnCard');
   resetBuffer();
+  handlingScan = false;
   if (camState === 'running' || camState === 'starting') return;
-  if (camState === 'stopping') { restartQueued = true; return; }   // resumed by the stop's settle()
+  if (camState === 'paused') { resumeCamera_(); return; }
   reallyStartCamera_();
 }
 
@@ -676,6 +716,7 @@ function reallyStartCamera_() {
     camState = 'running'; cameraGranted = true;
     hint('Materials in inventory just need SN');
     setupTorch();
+    cameraHealthCheck_();
   }).catch(function (e) {
     camState = 'idle'; scanner = null; camFailed_(e);
   });
@@ -686,6 +727,51 @@ function camFailed_(e) {
   var b = document.getElementById('btnStartCam');
   b.textContent = 'Restart camera';
   show('btnStartCam');
+}
+
+/**
+ * Freezes the feed after a hit. Deferred one tick: calling into html5-qrcode
+ * synchronously from inside its own decode callback is one of the known iOS
+ * wedges — the library is still mid-frame when the callback runs.
+ */
+function pauseCamera_() {
+  if (camState !== 'running' || !scanner) return;
+  camState = 'paused';
+  setTimeout(function () {
+    if (camState !== 'paused' || !scanner) return;
+    try { scanner.pause(true); } catch (e) { /* stopped elsewhere in the meantime */ }
+  }, 0);
+}
+
+/** Un-freezes for the next box. Falls back to a full hard restart on any doubt. */
+function resumeCamera_() {
+  if (!scanner) { reallyStartCamera_(); return; }
+  try {
+    scanner.resume();
+    camState = 'running';
+  } catch (e) {
+    hardRestartCamera();
+    return;
+  }
+  cameraHealthCheck_();
+}
+
+/** Confirms frames are actually flowing; hard-restarts if the stream is dead. */
+function cameraHealthCheck_() {
+  setTimeout(function () {
+    if (camState !== 'running') return;
+    var host = document.getElementById('reader');
+    var v = host && host.querySelector('video');
+    var live = false;
+    try {
+      live = !!(v && v.videoWidth > 0 && v.srcObject &&
+        v.srcObject.getVideoTracks().some(function (t) { return t.readyState === 'live'; }));
+    } catch (e) {}
+    if (!live) {
+      hint('Camera stream died \u2014 restarting\u2026');
+      hardRestartCamera();
+    }
+  }, 700);
 }
 
 function setupTorch() {
@@ -708,40 +794,14 @@ function toggleTorch() {
     .catch(function () { hint('Torch not supported on this camera.'); hide('btnTorch'); });
 }
 
-/**
- * Tears the camera down and ALWAYS returns the state machine to 'idle' — even if
- * html5-qrcode's stop() never settles. That guarantee is the actual fix for the
- * scan-once-then-dead regression; a 1.2 s watchdog force-settles a hung stop.
- */
-function stopScanner() {
-  if (camState === 'stopping') return stopPromise_ || Promise.resolve();
-  if (!scanner) { camState = 'idle'; return Promise.resolve(); }
-  camState = 'stopping';
-  torchOn = false;
-  var inst = scanner;
-  scanner = null;                    // no other code can touch the dying instance
-  var settled = false;
-  var settle = function () {
-    if (settled) return;
-    settled = true;
-    clearTimeout(stopSettleGuard);
-    try { inst.clear(); } catch (e) {}
-    var host = document.getElementById('reader');
-    if (host) host.innerHTML = '';
-    camState = 'idle';
-    if (restartQueued) { restartQueued = false; setTimeout(reallyStartCamera_, 0); }
-  };
-  stopSettleGuard = setTimeout(settle, 1200);
-  var p;
-  try { p = inst.stop(); } catch (e) { p = Promise.reject(e); }
-  stopPromise_ = Promise.resolve(p).catch(function () {}).then(settle);
-  return stopPromise_;
-}
+/** Leaving the scanner entirely — full guaranteed teardown. */
+function stopScanner() { hardStopCamera_(); return Promise.resolve(); }
 
 function onDecode(text) {
   text = String(text).trim();
   var now = Date.now();
   if (now < cooldownUntil) return;
+  if (handlingScan || camState !== 'running') return;   // a hit is already being processed
 
   var kind = PATTERNS.sn.test(text) ? 'sn'
            : PATTERNS.lot.test(text) ? 'lot'
@@ -794,12 +854,13 @@ function tryFastPath(sn) {
     .then(function (last) {
       if (fastPathSN !== sn) return;         // superseded by a different SN
       fastPathSN = null;
-      if (camState !== 'running') return;    // full three-code path already advanced
+      if (handlingScan) return;              // full three-code path already advanced
       if (!last) { hint('New canister — also scan the Lot and P/N barcodes.'); return; }
 
+      handlingScan = true;
       var cat = catalog[last.pn];
       feedback();
-      stopScanner();
+      pauseCamera_();                        // freeze, never tear down (iteration 8)
       if (!cat) {
         hide('scanCard');
         document.getElementById('upPn').textContent = last.pn;
@@ -814,7 +875,7 @@ function tryFastPath(sn) {
     })
     .catch(function () {
       // offline or error — quietly fall back to the full three-barcode path
-      if (fastPathSN === sn) { fastPathSN = null; if (camState === 'running') hint('Scan all three barcodes.'); }
+      if (fastPathSN === sn) { fastPathSN = null; if (!handlingScan) hint('Scan all three barcodes.'); }
     });
 }
 
@@ -856,7 +917,7 @@ function submitManual() {
         var cat = catalog[last.pn];
         if (!cat) return setText('mStatus', 'P/N ' + last.pn + ' missing from Catalog — add it in the Sheet.');
         current = { sn: sn, lot: last.lot, pn: last.pn, cat: cat, last: last, offline: false, manual: true };
-        stopScanner();
+        pauseCamera_();
         hide('scanCard'); hide('unknownPnCard');
         renderCanister();
       })
@@ -875,9 +936,10 @@ function submitManual() {
 // ============================================================ collected → lookup
 function allCodesCollected(isManual) {
   var snap = { sn: buffer.sn, lot: buffer.lot, pn: buffer.pn, manual: !!isManual };
+  handlingScan = true;
   fastPathSN = null;   // full path wins; any in-flight fast lookup is abandoned
   feedback();
-  stopScanner();
+  pauseCamera_();      // freeze, never tear down (iteration 8)
 
   var cat = catalog[snap.pn];
   if (!cat) {
